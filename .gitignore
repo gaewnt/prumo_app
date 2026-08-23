@@ -1,0 +1,7 @@
+# Cache local da CLI do Supabase — não é código, é específico da sua máquina/sessão.
+supabase/.temp/
+
+# Editor / SO
+.DS_Store
+Thumbs.db
+.vscode/

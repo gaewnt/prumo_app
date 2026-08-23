@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Prumo",
+    "slug": "prumo",
+    "scheme": "prumo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "supportsTablet": true,
+      "userInterfaceStyle": "automatic",
+      "bundleIdentifier": "com.analivia.prumo"
+    },
+    "android": {
+      "package": "com.analivia.prumo",
+      "adaptiveIcon": {
+        "backgroundColor": "#17161A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "userInterfaceStyle": "automatic",
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-notifications"
+    ]
+  }
+}
