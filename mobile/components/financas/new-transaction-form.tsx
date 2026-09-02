@@ -2,10 +2,24 @@ import React, { useState } from "react";
 import { Text, TextInput, View, Pressable, ActivityIndicator } from "react-native";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
-import { CATEGORY_PRESETS, type TransactionKind } from "@/lib/financas";
+import {
+  CATEGORY_PRESETS,
+  type TransactionKind,
+  type FinancialAccount,
+  type CreditCard,
+  type FinancialTag,
+} from "@/lib/financas";
 import { CategoryIconGrid } from "@/components/financas/category-icon-grid";
 
-type TransactionInput = { kind: TransactionKind; category: string; amount: number; description: string };
+type TransactionInput = {
+  kind: TransactionKind;
+  category: string;
+  amount: number;
+  description: string;
+  accountId?: string | null;
+  cardId?: string | null;
+  tagIds?: string[];
+};
 
 type NewTransactionFormProps = {
   /** Preenche o formulário com um lançamento existente — usado na edição. */
@@ -15,7 +29,38 @@ type NewTransactionFormProps = {
   onSubmit: (input: TransactionInput) => void;
   onCancel: () => void;
   isSaving: boolean;
+  /** Categorias disponíveis no grid — padrão + as que a pessoa criou. Se não vier, usa só os presets. */
+  allCategories?: readonly string[];
+  /** Contas ativas — pra marcar de onde saiu/entrou o dinheiro (opcional). */
+  accounts?: FinancialAccount[];
+  /** Cartões ativos — só faz sentido pra despesa (opcional). */
+  cards?: CreditCard[];
+  /** Tags cadastradas — multi-seleção (opcional). */
+  tags?: FinancialTag[];
+  /** Descrições de lançamentos recentes — alimenta o autocompletar. */
+  recentDescriptions?: string[];
+  /** Pré-seleciona um cartão como forma de pagamento (usado pelo
+   * atalho "+ Lançar despesa" direto na tela do cartão, em `financas-cartao.tsx`). Só
+   * tem efeito quando `initial` não é passado (edição sempre usa o que já foi salvo). */
+  defaultCardId?: string;
 };
+
+/** Só aceita dígitos, vírgula, ponto, os operadores básicos, parênteses e espaço — evita
+ * passar qualquer coisa pro avaliador. */
+const SAFE_EXPRESSION = /^[0-9+\-*\/.,() ]+$/;
+
+function evaluateExpression(expression: string): number | null {
+  if (!SAFE_EXPRESSION.test(expression)) return null;
+  try {
+    // eslint-disable-next-line no-new-func
+    const result = new Function(`return (${expression.replace(/,/g, ".")})`)();
+    return typeof result === "number" && Number.isFinite(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+type PaymentMethod = { type: "account" | "card"; id: string } | null;
 
 export function NewTransactionForm({
   initial,
@@ -23,15 +68,91 @@ export function NewTransactionForm({
   onSubmit,
   onCancel,
   isSaving,
+  allCategories = CATEGORY_PRESETS,
+  accounts = [],
+  cards = [],
+  tags = [],
+  recentDescriptions = [],
+  defaultCardId,
 }: NewTransactionFormProps) {
   const { tokens } = useTheme();
-  const [kind, setKind] = useState<TransactionKind>(initial?.kind ?? "expense");
-  const [category, setCategory] = useState<string>(initial?.category ?? CATEGORY_PRESETS[0]);
+  const [kind, setKind] = useState<TransactionKind>(initial?.kind === "income" ? "income" : "expense");
+  const [category, setCategory] = useState<string>(initial?.category ?? allCategories[0] ?? "Outros");
   const [amountText, setAmountText] = useState(initial ? String(initial.amount).replace(".", ",") : "");
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [descriptionFocused, setDescriptionFocused] = useState(false);
+  const [showCalculator, setShowCalculator] = useState(false);
+  const [expression, setExpression] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
+    initial?.cardId
+      ? { type: "card", id: initial.cardId }
+      : initial?.accountId
+        ? { type: "account", id: initial.accountId }
+        : !initial && defaultCardId
+          ? { type: "card", id: defaultCardId }
+          : null
+  );
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>(initial?.tagIds ?? []);
 
   const amount = Number(amountText.replace(",", "."));
   const isValid = category.trim().length > 0 && amount > 0;
+
+  const descriptionMatches =
+    descriptionFocused && description.trim().length >= 2
+      ? recentDescriptions
+          .filter((d) => d.toLowerCase().includes(description.trim().toLowerCase()) && d !== description)
+          .slice(0, 5)
+      : [];
+
+  function toggleTag(id: string) {
+    setSelectedTagIds((current) => (current.includes(id) ? current.filter((t) => t !== id) : [...current, id]));
+  }
+
+  function handleApplyCalculator() {
+    const result = evaluateExpression(expression);
+    if (result !== null) {
+      setAmountText(result.toFixed(2).replace(".", ","));
+      setShowCalculator(false);
+      setExpression("");
+    }
+  }
+
+  function handleSubmit() {
+    onSubmit({
+      kind,
+      category,
+      amount,
+      description,
+      accountId: paymentMethod?.type === "account" ? paymentMethod.id : null,
+      cardId: paymentMethod?.type === "card" ? paymentMethod.id : null,
+      tagIds: selectedTagIds,
+    });
+  }
+
+  function paymentChip(label: string, selected: boolean, onPress: () => void, key: string) {
+    return (
+      <Pressable
+        key={key}
+        onPress={onPress}
+        style={{
+          paddingHorizontal: 12,
+          paddingVertical: 8,
+          borderRadius: 8,
+          backgroundColor: selected ? tokens.accent : tokens.surfaceAlt,
+        }}
+      >
+        <Text
+          style={{
+            fontFamily: fontFamily.bodyMedium,
+            fontSize: 12.5,
+            color: selected ? tokens.accentText : tokens.textMuted,
+          }}
+        >
+          {label}
+        </Text>
+      </Pressable>
+    );
+  }
 
   return (
     <View
@@ -50,7 +171,10 @@ export function NewTransactionForm({
           return (
             <Pressable
               key={k}
-              onPress={() => setKind(k)}
+              onPress={() => {
+                setKind(k);
+                setPaymentMethod(null);
+              }}
               style={{
                 flex: 1,
                 paddingVertical: 10,
@@ -73,40 +197,199 @@ export function NewTransactionForm({
         })}
       </View>
 
-      <CategoryIconGrid categories={CATEGORY_PRESETS} selected={category} onSelect={setCategory} />
+      <CategoryIconGrid categories={allCategories} selected={category} onSelect={setCategory} />
 
-      <TextInput
-        value={amountText}
-        onChangeText={setAmountText}
-        placeholder="Valor (ex: 45,90)"
-        placeholderTextColor={tokens.textMuted}
-        keyboardType="decimal-pad"
-        style={{
-          fontFamily: fontFamily.body,
-          fontSize: 15,
-          color: tokens.text,
-          backgroundColor: tokens.surfaceAlt,
-          borderRadius: 10,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-        }}
-      />
+      <View style={{ gap: 6 }}>
+        <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+          <TextInput
+            value={amountText}
+            onChangeText={setAmountText}
+            placeholder="Valor (ex: 45,90)"
+            placeholderTextColor={tokens.textMuted}
+            keyboardType="decimal-pad"
+            style={{
+              flex: 1,
+              // Mesmo ajuste feito em Casa/Treino/Veículo: sem isso o
+              // campo não encolhe abaixo da largura do placeholder e passa da borda da tela.
+              minWidth: 0,
+              fontFamily: fontFamily.body,
+              fontSize: 15,
+              color: tokens.text,
+              backgroundColor: tokens.surfaceAlt,
+              borderRadius: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 12,
+            }}
+          />
+          <Pressable
+            onPress={() => setShowCalculator(!showCalculator)}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 10,
+              backgroundColor: showCalculator ? tokens.accent : tokens.surfaceAlt,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            hitSlop={4}
+          >
+            <Text style={{ fontSize: 18 }}>🧮</Text>
+          </Pressable>
+        </View>
 
-      <TextInput
-        value={description}
-        onChangeText={setDescription}
-        placeholder="Descrição (opcional)"
-        placeholderTextColor={tokens.textMuted}
-        style={{
-          fontFamily: fontFamily.body,
-          fontSize: 15,
-          color: tokens.text,
-          backgroundColor: tokens.surfaceAlt,
-          borderRadius: 10,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-        }}
-      />
+        {showCalculator ? (
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <TextInput
+              value={expression}
+              onChangeText={setExpression}
+              placeholder="Ex: 45,90+12,50*2"
+              placeholderTextColor={tokens.textMuted}
+              keyboardType="numbers-and-punctuation"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontFamily: fontFamily.mono,
+                fontSize: 14,
+                color: tokens.text,
+                backgroundColor: tokens.surfaceAlt,
+                borderRadius: 10,
+                paddingHorizontal: 14,
+                paddingVertical: 10,
+              }}
+            />
+            <Pressable
+              onPress={handleApplyCalculator}
+              style={{
+                paddingHorizontal: 16,
+                borderRadius: 10,
+                backgroundColor: tokens.accent,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 14, color: tokens.accentText }}>
+                =
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={{ gap: 6 }}>
+        <TextInput
+          value={description}
+          onChangeText={setDescription}
+          onFocus={() => setDescriptionFocused(true)}
+          onBlur={() => setTimeout(() => setDescriptionFocused(false), 150)}
+          placeholder="Descrição (opcional)"
+          placeholderTextColor={tokens.textMuted}
+          style={{
+            fontFamily: fontFamily.body,
+            fontSize: 15,
+            color: tokens.text,
+            backgroundColor: tokens.surfaceAlt,
+            borderRadius: 10,
+            paddingHorizontal: 14,
+            paddingVertical: 12,
+          }}
+        />
+        {descriptionMatches.length > 0 ? (
+          <View
+            style={{
+              backgroundColor: tokens.surfaceAlt,
+              borderRadius: 10,
+              overflow: "hidden",
+            }}
+          >
+            {descriptionMatches.map((match, index) => (
+              <Pressable
+                key={match + index}
+                onPress={() => {
+                  setDescription(match);
+                  setDescriptionFocused(false);
+                }}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 10,
+                  borderTopWidth: index === 0 ? 0 : 1,
+                  borderTopColor: tokens.border,
+                }}
+              >
+                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                  {match}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+      </View>
+
+      {accounts.length > 0 || (kind === "expense" && cards.length > 0) ? (
+        <View style={{ gap: 6 }}>
+          <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12, color: tokens.textMuted }}>
+            Conta / cartão (opcional)
+          </Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {paymentChip("Nenhuma", paymentMethod === null, () => setPaymentMethod(null), "none")}
+            {accounts.map((acc) =>
+              paymentChip(
+                acc.name,
+                paymentMethod?.type === "account" && paymentMethod.id === acc.id,
+                () => setPaymentMethod({ type: "account", id: acc.id }),
+                `account-${acc.id}`
+              )
+            )}
+            {kind === "expense"
+              ? cards.map((card) =>
+                  paymentChip(
+                    `💳 ${card.name}`,
+                    paymentMethod?.type === "card" && paymentMethod.id === card.id,
+                    () => setPaymentMethod({ type: "card", id: card.id }),
+                    `card-${card.id}`
+                  )
+                )
+              : null}
+          </View>
+        </View>
+      ) : null}
+
+      {tags.length > 0 ? (
+        <View style={{ gap: 6 }}>
+          <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12, color: tokens.textMuted }}>
+            Tags (opcional)
+          </Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {tags.map((tag) => {
+              const selected = selectedTagIds.includes(tag.id);
+              return (
+                <Pressable
+                  key={tag.id}
+                  onPress={() => toggleTag(tag.id)}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor: selected ? tokens[tag.color_key] : tokens.surfaceAlt,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontFamily: fontFamily.bodyMedium,
+                      fontSize: 12.5,
+                      color: selected ? tokens.accentText : tokens.textMuted,
+                    }}
+                  >
+                    {tag.name}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
 
       <View style={{ flexDirection: "row", gap: 8 }}>
         <Pressable onPress={onCancel} style={{ flex: 1, alignItems: "center", paddingVertical: 12 }}>
@@ -115,7 +398,7 @@ export function NewTransactionForm({
           </Text>
         </Pressable>
         <Pressable
-          onPress={() => onSubmit({ kind, category, amount, description })}
+          onPress={handleSubmit}
           disabled={isSaving || !isValid}
           style={{
             flex: 1,

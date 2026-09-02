@@ -5,6 +5,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Screen } from "@/components/ui/screen";
 import { StatCard } from "@/components/ui/stat-card";
 import { WeeklyBarChart } from "@/components/charts/weekly-bar-chart";
+import { MonthHeatmap } from "@/components/ui/month-heatmap";
+import { MonthNav } from "@/components/ui/month-nav";
 import { NewShoppingItemForm } from "@/components/casa/new-shopping-item-form";
 import { ShoppingItemRow } from "@/components/casa/shopping-item-row";
 import { HomeTaskRow } from "@/components/casa/home-task-row";
@@ -25,6 +27,8 @@ import {
   toggleHomeTaskToday,
   computeTodayTasks,
   computeWeeklyTaskCompletion,
+  computeDayTaskCompletion,
+  fetchHomeTaskLogsForMonth,
 } from "@/lib/casa";
 
 export default function CasaScreen() {
@@ -55,6 +59,17 @@ export default function CasaScreen() {
   const checkedItems = shoppingItems.filter((i) => i.checked);
   const todayTasks = computeTodayTasks(tasks, taskLogs);
   const weeklyTasks = computeWeeklyTaskCompletion(tasks, taskLogs);
+
+  // Histórico de meses anteriores — `taskLogs` só cobre os últimos 7 dias
+  // (a busca de sempre da Casa), então aqui busca sempre o mês selecionado, inclusive o atual.
+  const now = new Date();
+  const [historyMonth, setHistoryMonth] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
+  const historyTaskLogsQuery = useQuery({
+    queryKey: ["casa", "monthLogs", userId, historyMonth.getFullYear(), historyMonth.getMonth()],
+    queryFn: () => fetchHomeTaskLogsForMonth(historyMonth),
+    enabled: !!userId,
+  });
+  const heatmapTaskLogs = historyTaskLogsQuery.data ?? [];
 
   // Junta com `tasks` inteiro (não só as ativas) pra tarefas pausadas continuarem
   // editáveis/reativáveis na seção "não programadas", em vez de sumirem da tela.
@@ -198,6 +213,26 @@ export default function CasaScreen() {
                 >
                   <WeeklyBarChart data={weeklyTasks} highlightIndex={6} />
                 </StatCard>
+              ) : null}
+
+              {tasks.length > 0 ? (
+                <View style={{ gap: 8 }}>
+                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.text }}>
+                    Histórico
+                  </Text>
+                  <MonthNav monthDate={historyMonth} onChange={setHistoryMonth} />
+                  <MonthHeatmap
+                    monthDate={historyMonth}
+                    showMonthLabel={false}
+                    getCellColor={(dateStr) => {
+                      const ratio = computeDayTaskCompletion(dateStr, tasks, heatmapTaskLogs);
+                      if (ratio === null) return null;
+                      if (ratio >= 1) return tokens.accent;
+                      if (ratio > 0) return tokens.accentMuted;
+                      return tokens.surfaceAlt;
+                    }}
+                  />
+                </View>
               ) : null}
 
               {tasks.length === 0 && !showTaskForm ? (

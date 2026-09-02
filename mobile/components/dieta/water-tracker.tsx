@@ -1,5 +1,5 @@
-import React from "react";
-import { Text, View, Pressable, ActivityIndicator } from "react-native";
+import React, { useState } from "react";
+import { Text, TextInput, View, Pressable, ActivityIndicator } from "react-native";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { ProgressRing } from "@/components/ui/progress-ring";
@@ -13,6 +13,10 @@ type WaterTrackerProps = {
   onUndo: () => void;
   isUndoing: boolean;
   hasLogsToday: boolean;
+  /** Mesmo alcance de "Desfazer último": só o registro mais recente. */
+  lastLogAmountMl: number | null;
+  onUpdateLast: (amountMl: number) => void;
+  isUpdatingLast: boolean;
 };
 
 function formatMl(ml: number) {
@@ -20,9 +24,22 @@ function formatMl(ml: number) {
 }
 
 /** Registro rápido de água — um toque por copo, no padrão do monitor de água do Lifesum. */
-export function WaterTracker({ totalMl, goalMl, onAdd, isAdding, onUndo, isUndoing, hasLogsToday }: WaterTrackerProps) {
+export function WaterTracker({
+  totalMl,
+  goalMl,
+  onAdd,
+  isAdding,
+  onUndo,
+  isUndoing,
+  hasLogsToday,
+  lastLogAmountMl,
+  onUpdateLast,
+  isUpdatingLast,
+}: WaterTrackerProps) {
   const { tokens } = useTheme();
   const percent = goalMl ? Math.round((totalMl / goalMl) * 100) : 0;
+  const [isEditingLast, setIsEditingLast] = useState(false);
+  const [editAmountText, setEditAmountText] = useState("");
 
   return (
     <View
@@ -85,12 +102,78 @@ export function WaterTracker({ totalMl, goalMl, onAdd, isAdding, onUndo, isUndoi
         {isAdding ? <ActivityIndicator color={tokens.accent} /> : null}
       </View>
 
-      {hasLogsToday ? (
-        <Pressable onPress={onUndo} disabled={isUndoing} hitSlop={8} style={{ alignSelf: "flex-start" }}>
-          <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
-            {isUndoing ? "Desfazendo…" : "Desfazer último"}
-          </Text>
-        </Pressable>
+      {hasLogsToday && !isEditingLast ? (
+        <View style={{ flexDirection: "row", gap: 16 }}>
+          <Pressable
+            onPress={() => {
+              setEditAmountText(lastLogAmountMl != null ? String(lastLogAmountMl) : "");
+              setIsEditingLast(true);
+            }}
+            hitSlop={8}
+          >
+            <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.accent }}>
+              Editar último
+            </Text>
+          </Pressable>
+          <Pressable onPress={onUndo} disabled={isUndoing} hitSlop={8}>
+            <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+              {isUndoing ? "Desfazendo…" : "Desfazer último"}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {isEditingLast ? (
+        <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+          <TextInput
+            value={editAmountText}
+            onChangeText={setEditAmountText}
+            placeholder="Quantidade (ml)"
+            placeholderTextColor={tokens.textMuted}
+            keyboardType="number-pad"
+            autoFocus
+            style={{
+              flex: 1,
+              fontFamily: fontFamily.body,
+              fontSize: 14,
+              color: tokens.text,
+              backgroundColor: tokens.surfaceAlt,
+              borderRadius: 10,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+            }}
+          />
+          <Pressable onPress={() => setIsEditingLast(false)} hitSlop={8}>
+            <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
+              Cancelar
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              const amount = Math.round(Number(editAmountText));
+              if (amount > 0) {
+                onUpdateLast(amount);
+                setIsEditingLast(false);
+              }
+            }}
+            disabled={isUpdatingLast || !(Number(editAmountText) > 0)}
+            style={{
+              backgroundColor: tokens.accent,
+              borderRadius: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 8,
+              opacity: isUpdatingLast || !(Number(editAmountText) > 0) ? 0.6 : 1,
+            }}
+          >
+            {isUpdatingLast ? (
+              <ActivityIndicator color={tokens.accentText} size="small" />
+            ) : (
+              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 13, color: tokens.accentText }}>
+                Salvar
+              </Text>
+            )}
+          </Pressable>
+        </View>
       ) : null}
     </View>
   );

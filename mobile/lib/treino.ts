@@ -259,6 +259,34 @@ export function computeWeeklySetsCompleted(
   });
 }
 
+/** Só os logs de treino de um mês específico — mesmo padrão do `fetchHabitLogsForMonth` da
+ * Rotina, pra alimentar o `MonthHeatmap` do histórico de meses anteriores */
+export async function fetchWorkoutLogsForMonth(monthDate: Date): Promise<WorkoutLog[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("workout_logs")
+    .select("workout_id, log_date, completed_exercise_ids")
+    .gte("log_date", start)
+    .lte("log_date", end);
+  if (error) throw error;
+
+  return (data ?? []) as WorkoutLog[];
+}
+
+/** Séries concluídas num dia específico — mesma conta do `computeWeeklySetsCompleted`, só que
+ * pra uma data isolada em vez de uma semana inteira (usada pelo `MonthHeatmap` do histórico). */
+export function computeDaySetsCompleted(dateStr: string, logs: WorkoutLog[], exercises: Exercise[]): number {
+  const exerciseById = new Map(exercises.map((e) => [e.id, e]));
+  return logs
+    .filter((l) => l.log_date === dateStr)
+    .flatMap((l) => l.completed_exercise_ids)
+    .reduce((sum, exId) => sum + (exerciseById.get(exId)?.sets ?? 0), 0);
+}
+
 /** Peso mais recente registrado (qualquer data) — usado na tela "Editar perfil". */
 export async function fetchLatestBodyLog() {
   const { data, error } = await supabase
@@ -291,7 +319,7 @@ export function computeWeightDelta(bodyLogs: BodyLog[]) {
   const first = bodyLogs[0];
   return {
     latestKg: latest.weight_kg,
-    deltaKg: Math.round((latest.weight_kg - first.weight_kg) * 10) / 10,
+    deltaKg: Math.round((latest.weight_kg - first.weight_kg) * 1000) / 1000,
     logDate: latest.log_date,
   };
 }

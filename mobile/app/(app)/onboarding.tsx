@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { Text, TextInput, View, Pressable, ActivityIndicator } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -324,6 +324,8 @@ function BirthDateFields({
   onChangeYear: (t: string) => void;
 }) {
   const { tokens } = useTheme();
+  const monthRef = useRef<TextInput>(null);
+  const yearRef = useRef<TextInput>(null);
   const fieldStyle = {
     fontFamily: fontFamily.mono,
     fontSize: 18,
@@ -337,7 +339,11 @@ function BirthDateFields({
     <View style={{ flexDirection: "row", gap: 8 }}>
       <TextInput
         value={day}
-        onChangeText={(t) => onChangeDay(t.replace(/\D/g, "").slice(0, 2))}
+        onChangeText={(t) => {
+          const digits = t.replace(/\D/g, "").slice(0, 2);
+          onChangeDay(digits);
+          if (digits.length === 2) monthRef.current?.focus();
+        }}
         placeholder="DD"
         placeholderTextColor={tokens.textMuted}
         keyboardType="number-pad"
@@ -345,8 +351,13 @@ function BirthDateFields({
         style={[fieldStyle, { width: 64 }]}
       />
       <TextInput
+        ref={monthRef}
         value={month}
-        onChangeText={(t) => onChangeMonth(t.replace(/\D/g, "").slice(0, 2))}
+        onChangeText={(t) => {
+          const digits = t.replace(/\D/g, "").slice(0, 2);
+          onChangeMonth(digits);
+          if (digits.length === 2) yearRef.current?.focus();
+        }}
         placeholder="MM"
         placeholderTextColor={tokens.textMuted}
         keyboardType="number-pad"
@@ -354,6 +365,7 @@ function BirthDateFields({
         style={[fieldStyle, { width: 64 }]}
       />
       <TextInput
+        ref={yearRef}
         value={year}
         onChangeText={(t) => onChangeYear(t.replace(/\D/g, "").slice(0, 4))}
         placeholder="AAAA"

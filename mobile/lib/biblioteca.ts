@@ -185,6 +185,12 @@ export async function createQuote(userId: string, bookId: string, content: strin
   if (error) throw error;
 }
 
+/** Corrige uma citação digitada errado sem precisar excluir e recriar. */
+export async function updateQuote(id: string, content: string) {
+  const { error } = await supabase.from("book_quotes").update({ content }).eq("id", id);
+  if (error) throw error;
+}
+
 export async function deleteQuote(id: string) {
   const { error } = await supabase.from("book_quotes").delete().eq("id", id);
   if (error) throw error;
@@ -251,6 +257,14 @@ export function computeWeeklyPages(logs: ReadingLog[], today = new Date()) {
     const value = logs.filter((l) => l.log_date === dateStr).reduce((sum, l) => sum + l.pages_read, 0);
     return { label: WEEKDAY_LABELS[day.getDay()], value };
   });
+}
+
+/** Páginas lidas num dia específico — mesma conta do `computeWeeklyPages`, só que pra uma data
+ * isolada. `fetchBiblioteca` já traz o histórico inteiro (sem filtro de data), então o
+ * histórico de meses anteriores não precisa de busca nova, só reaproveita
+ * os `logs` que já vêm na tela. */
+export function computeDayPages(dateStr: string, logs: ReadingLog[]): number {
+  return logs.filter((l) => l.log_date === dateStr).reduce((sum, l) => sum + l.pages_read, 0);
 }
 
 export function formatLogDate(dateStr: string) {

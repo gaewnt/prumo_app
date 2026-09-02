@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Este módulo não declara nada aqui de propósito: o AccessibilityService e a
+  permissão SYSTEM_ALERT_WINDOW (overlay) são registrados pelo config plugin
+  `plugins/withCopilotoAccessibility.js` direto no AndroidManifest.xml final
+  do app (gerado a cada `expo prebuild`), não pelo merge automático deste
+  manifesto do módulo — assim tudo que o Copiloto precisa no manifest fica
+  num único lugar, fácil de auditar.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

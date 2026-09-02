@@ -26,9 +26,9 @@ import {
   type RelationshipReminder,
 } from "@/lib/relacoes";
 
-export default function RelacoesScreen() {
+/** Conteúdo de Relações — usado tanto na rota própria quanto como aba dentro do hub Rotina. */
+export function RelacoesContent() {
   const { tokens } = useTheme();
-  const router = useRouter();
   const queryClient = useQueryClient();
   const userId = useAuthStore((s) => s.session?.user.id);
 
@@ -95,166 +95,176 @@ export default function RelacoesScreen() {
   });
 
   return (
+    <View style={{ gap: 20 }}>
+      <View style={{ gap: 4 }}>
+        <Text style={{ fontSize: 32 }}>👥</Text>
+        <Text style={{ fontFamily: fontFamily.display, fontSize: 26, color: tokens.text }}>Relações</Text>
+        <Text style={{ fontFamily: fontFamily.body, fontSize: 15, color: tokens.textMuted }}>
+          Aniversários, lembretes e datas de quem você gosta.
+        </Text>
+      </View>
+
+      {query.isLoading ? (
+        <ActivityIndicator color={tokens.accent} />
+      ) : query.isError ? (
+        <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.danger }}>
+          Não deu pra carregar seus dados de Relações agora. Puxe pra atualizar ou tente de novo em instantes.
+        </Text>
+      ) : (
+        <View style={{ gap: 24 }}>
+          {birthdays.length > 0 ? (
+            <View style={{ gap: 10 }}>
+              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                Próximos aniversários
+              </Text>
+              <View
+                style={{
+                  backgroundColor: tokens.surface,
+                  borderColor: tokens.border,
+                  borderWidth: 1,
+                  borderRadius: 14,
+                  padding: 14,
+                  gap: 8,
+                }}
+              >
+                {birthdays.map(({ person, daysUntil }) => (
+                  <View key={person.id} style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                    <Text style={{ fontFamily: fontFamily.body, fontSize: 13.5, color: tokens.text }}>
+                      🎂 {person.name} · {formatBirthdayLabel(person.birth_date as string)}
+                    </Text>
+                    <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.accent }}>
+                      {daysUntil === 0 ? "Hoje" : `Em ${daysUntil} dias`}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          ) : null}
+
+          {/* Pessoas */}
+          <View style={{ gap: 10 }}>
+            <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>Pessoas</Text>
+
+            {people.length === 0 && !showPersonForm ? (
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                Nenhuma pessoa cadastrada ainda.
+              </Text>
+            ) : null}
+
+            <View style={{ gap: 8 }}>
+              {people.map((person) => (
+                <PersonRow
+                  key={person.id}
+                  person={person}
+                  isEditing={editingPersonId === person.id}
+                  onStartEdit={() => setEditingPersonId(person.id)}
+                  onCancelEdit={() => setEditingPersonId(null)}
+                  onUpdate={(input) => updatePersonMutation.mutate({ id: person.id, input })}
+                  isSaving={updatePersonMutation.isPending}
+                  onDelete={() => deletePersonMutation.mutate(person.id)}
+                />
+              ))}
+            </View>
+
+            {showPersonForm ? (
+              <NewPersonForm
+                isSaving={createPersonMutation.isPending}
+                onCancel={() => setShowPersonForm(false)}
+                onSubmit={(input) => createPersonMutation.mutate(input)}
+              />
+            ) : (
+              <Pressable
+                onPress={() => setShowPersonForm(true)}
+                style={{ borderColor: tokens.border, borderWidth: 1, borderStyle: "dashed", borderRadius: 14, paddingVertical: 14, alignItems: "center" }}
+              >
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.accent }}>+ Nova pessoa</Text>
+              </Pressable>
+            )}
+          </View>
+
+          {/* Lembretes */}
+          <View style={{ gap: 10 }}>
+            <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>Lembretes</Text>
+
+            {reminders.length === 0 && !showReminderForm ? (
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                Nenhum lembrete cadastrado ainda.
+              </Text>
+            ) : null}
+
+            {pendingReminders.map((reminder) => (
+              <ReminderRow
+                key={reminder.id}
+                reminder={reminder}
+                person={people.find((p) => p.id === reminder.person_id)}
+                people={people}
+                isEditing={editingReminderId === reminder.id}
+                onStartEdit={() => setEditingReminderId(reminder.id)}
+                onCancelEdit={() => setEditingReminderId(null)}
+                onUpdate={(input) => updateReminderMutation.mutate({ reminder, input })}
+                isSaving={updateReminderMutation.isPending}
+                onDelete={() => deleteReminderMutation.mutate(reminder)}
+                onToggleDone={() => toggleReminderMutation.mutate({ reminder, done: !reminder.done })}
+              />
+            ))}
+
+            {showReminderForm ? (
+              <NewReminderForm
+                people={people}
+                isSaving={createReminderMutation.isPending}
+                onCancel={() => setShowReminderForm(false)}
+                onSubmit={(input) => createReminderMutation.mutate(input)}
+              />
+            ) : (
+              <Pressable
+                onPress={() => setShowReminderForm(true)}
+                style={{ borderColor: tokens.border, borderWidth: 1, borderStyle: "dashed", borderRadius: 14, paddingVertical: 14, alignItems: "center" }}
+              >
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.accent }}>+ Novo lembrete</Text>
+              </Pressable>
+            )}
+
+            {doneReminders.length > 0 ? (
+              <View style={{ gap: 8, marginTop: 6 }}>
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
+                  Concluídos · {doneReminders.length}
+                </Text>
+                {doneReminders.map((reminder) => (
+                  <ReminderRow
+                    key={reminder.id}
+                    reminder={reminder}
+                    person={people.find((p) => p.id === reminder.person_id)}
+                    people={people}
+                    isEditing={editingReminderId === reminder.id}
+                    onStartEdit={() => setEditingReminderId(reminder.id)}
+                    onCancelEdit={() => setEditingReminderId(null)}
+                    onUpdate={(input) => updateReminderMutation.mutate({ reminder, input })}
+                    isSaving={updateReminderMutation.isPending}
+                    onDelete={() => deleteReminderMutation.mutate(reminder)}
+                    onToggleDone={() => toggleReminderMutation.mutate({ reminder, done: !reminder.done })}
+                  />
+                ))}
+              </View>
+            ) : null}
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+export default function RelacoesScreen() {
+  const { tokens } = useTheme();
+  const router = useRouter();
+
+  return (
     <Screen scroll>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={{ gap: 20 }}>
         <Pressable onPress={() => router.back()} hitSlop={8}>
           <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.accent }}>← Voltar</Text>
         </Pressable>
-
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontSize: 32 }}>👥</Text>
-          <Text style={{ fontFamily: fontFamily.display, fontSize: 26, color: tokens.text }}>Relações</Text>
-          <Text style={{ fontFamily: fontFamily.body, fontSize: 15, color: tokens.textMuted }}>
-            Aniversários, lembretes e datas de quem você gosta.
-          </Text>
-        </View>
-
-        {query.isLoading ? (
-          <ActivityIndicator color={tokens.accent} />
-        ) : query.isError ? (
-          <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.danger }}>
-            Não deu pra carregar seus dados de Relações agora. Puxe pra atualizar ou tente de novo em instantes.
-          </Text>
-        ) : (
-          <View style={{ gap: 24 }}>
-            {birthdays.length > 0 ? (
-              <View style={{ gap: 10 }}>
-                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                  Próximos aniversários
-                </Text>
-                <View
-                  style={{
-                    backgroundColor: tokens.surface,
-                    borderColor: tokens.border,
-                    borderWidth: 1,
-                    borderRadius: 14,
-                    padding: 14,
-                    gap: 8,
-                  }}
-                >
-                  {birthdays.map(({ person, daysUntil }) => (
-                    <View key={person.id} style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                      <Text style={{ fontFamily: fontFamily.body, fontSize: 13.5, color: tokens.text }}>
-                        🎂 {person.name} · {formatBirthdayLabel(person.birth_date as string)}
-                      </Text>
-                      <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.accent }}>
-                        {daysUntil === 0 ? "Hoje" : `Em ${daysUntil} dias`}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            {/* Pessoas */}
-            <View style={{ gap: 10 }}>
-              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>Pessoas</Text>
-
-              {people.length === 0 && !showPersonForm ? (
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  Nenhuma pessoa cadastrada ainda.
-                </Text>
-              ) : null}
-
-              <View style={{ gap: 8 }}>
-                {people.map((person) => (
-                  <PersonRow
-                    key={person.id}
-                    person={person}
-                    isEditing={editingPersonId === person.id}
-                    onStartEdit={() => setEditingPersonId(person.id)}
-                    onCancelEdit={() => setEditingPersonId(null)}
-                    onUpdate={(input) => updatePersonMutation.mutate({ id: person.id, input })}
-                    isSaving={updatePersonMutation.isPending}
-                    onDelete={() => deletePersonMutation.mutate(person.id)}
-                  />
-                ))}
-              </View>
-
-              {showPersonForm ? (
-                <NewPersonForm
-                  isSaving={createPersonMutation.isPending}
-                  onCancel={() => setShowPersonForm(false)}
-                  onSubmit={(input) => createPersonMutation.mutate(input)}
-                />
-              ) : (
-                <Pressable
-                  onPress={() => setShowPersonForm(true)}
-                  style={{ borderColor: tokens.border, borderWidth: 1, borderStyle: "dashed", borderRadius: 14, paddingVertical: 14, alignItems: "center" }}
-                >
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.accent }}>+ Nova pessoa</Text>
-                </Pressable>
-              )}
-            </View>
-
-            {/* Lembretes */}
-            <View style={{ gap: 10 }}>
-              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>Lembretes</Text>
-
-              {reminders.length === 0 && !showReminderForm ? (
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  Nenhum lembrete cadastrado ainda.
-                </Text>
-              ) : null}
-
-              {pendingReminders.map((reminder) => (
-                <ReminderRow
-                  key={reminder.id}
-                  reminder={reminder}
-                  person={people.find((p) => p.id === reminder.person_id)}
-                  people={people}
-                  isEditing={editingReminderId === reminder.id}
-                  onStartEdit={() => setEditingReminderId(reminder.id)}
-                  onCancelEdit={() => setEditingReminderId(null)}
-                  onUpdate={(input) => updateReminderMutation.mutate({ reminder, input })}
-                  isSaving={updateReminderMutation.isPending}
-                  onDelete={() => deleteReminderMutation.mutate(reminder)}
-                  onToggleDone={() => toggleReminderMutation.mutate({ reminder, done: !reminder.done })}
-                />
-              ))}
-
-              {showReminderForm ? (
-                <NewReminderForm
-                  people={people}
-                  isSaving={createReminderMutation.isPending}
-                  onCancel={() => setShowReminderForm(false)}
-                  onSubmit={(input) => createReminderMutation.mutate(input)}
-                />
-              ) : (
-                <Pressable
-                  onPress={() => setShowReminderForm(true)}
-                  style={{ borderColor: tokens.border, borderWidth: 1, borderStyle: "dashed", borderRadius: 14, paddingVertical: 14, alignItems: "center" }}
-                >
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.accent }}>+ Novo lembrete</Text>
-                </Pressable>
-              )}
-
-              {doneReminders.length > 0 ? (
-                <View style={{ gap: 8, marginTop: 6 }}>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
-                    Concluídos · {doneReminders.length}
-                  </Text>
-                  {doneReminders.map((reminder) => (
-                    <ReminderRow
-                      key={reminder.id}
-                      reminder={reminder}
-                      person={people.find((p) => p.id === reminder.person_id)}
-                      people={people}
-                      isEditing={editingReminderId === reminder.id}
-                      onStartEdit={() => setEditingReminderId(reminder.id)}
-                      onCancelEdit={() => setEditingReminderId(null)}
-                      onUpdate={(input) => updateReminderMutation.mutate({ reminder, input })}
-                      isSaving={updateReminderMutation.isPending}
-                      onDelete={() => deleteReminderMutation.mutate(reminder)}
-                      onToggleDone={() => toggleReminderMutation.mutate({ reminder, done: !reminder.done })}
-                    />
-                  ))}
-                </View>
-              ) : null}
-            </View>
-          </View>
-        )}
+        <RelacoesContent />
       </View>
     </Screen>
   );

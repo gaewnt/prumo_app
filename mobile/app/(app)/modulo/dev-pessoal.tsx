@@ -4,6 +4,8 @@ import { useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Screen } from "@/components/ui/screen";
 import { MonthHeatmap } from "@/components/ui/month-heatmap";
+import { MonthNav } from "@/components/ui/month-nav";
+import { ModuleTabs } from "@/components/ui/module-tabs";
 import { MotivationRow } from "@/components/dev-pessoal/motivation-row";
 import { NewMotivationForm } from "@/components/dev-pessoal/new-motivation-form";
 import { LevelCard } from "@/components/dev-pessoal/level-card";
@@ -19,6 +21,7 @@ import { useAuthStore } from "@/lib/store/auth-store";
 import { toDateString } from "@/lib/rotina";
 import {
   fetchDevPessoal,
+  fetchMoodLogsForMonth,
   pickPhraseOfDay,
   computeGamification,
   deriveGoalStatus,
@@ -36,15 +39,31 @@ import {
   deleteMoodLog,
   type Goal,
 } from "@/lib/dev-pessoal";
+import { TreinoContent } from "./treino";
+import { DietaContent } from "./dieta";
+import { BelezaContent } from "./beleza";
+import { MenteContent } from "./mente";
+import { DetoxContent } from "./detox";
+import { ViagensContent } from "./viagens";
 
 function formatDateLabel(dateStr: string) {
   const [, m, d] = dateStr.split("-");
   return `${d}/${m}`;
 }
 
-export default function DevPessoalScreen() {
+const TABS = [
+  { key: "dev-pessoal", label: "Visão Geral" },
+  { key: "treino", label: "Treino" },
+  { key: "dieta", label: "Dieta" },
+  { key: "beleza", label: "Beleza" },
+  { key: "mente", label: "Mente" },
+  { key: "detox", label: "Detox" },
+  { key: "viagens", label: "Viagens" },
+];
+
+/** Conteúdo de Desenvolvimento Pessoal (visão geral) — usado tanto na rota própria quanto como aba dentro do hub. */
+export function DevPessoalContent() {
   const { tokens } = useTheme();
-  const router = useRouter();
   const queryClient = useQueryClient();
   const userId = useAuthStore((s) => s.session?.user.id);
 
@@ -67,6 +86,19 @@ export default function DevPessoalScreen() {
   const moodLogs = query.data?.moodLogs ?? [];
   const phraseOfDay = pickPhraseOfDay(motivations);
   const gamification = computeGamification(goals, journalEntries, moodLogs);
+
+  // Histórico de meses anteriores — mesmo padrão da Rotina: o mês atual
+  // reaproveita `moodLogs` (já vem na busca de sempre), só busca de novo ao navegar de mês.
+  const now = new Date();
+  const [historyMonth, setHistoryMonth] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
+  const isCurrentHistoryMonth =
+    historyMonth.getFullYear() === now.getFullYear() && historyMonth.getMonth() === now.getMonth();
+  const historyMoodLogsQuery = useQuery({
+    queryKey: ["dev-pessoal", "monthLogs", userId, historyMonth.getFullYear(), historyMonth.getMonth()],
+    queryFn: () => fetchMoodLogsForMonth(historyMonth),
+    enabled: !!userId && !isCurrentHistoryMonth,
+  });
+  const heatmapMoodLogs = isCurrentHistoryMonth ? moodLogs : historyMoodLogsQuery.data ?? [];
 
   const overdueGoals = goals.filter((g) => deriveGoalStatus(g) === "overdue");
   const activeGoals = goals.filter((g) => deriveGoalStatus(g) === "active");
@@ -146,8 +178,8 @@ export default function DevPessoalScreen() {
 
   // ---- Humor ----
   const saveMoodMutation = useMutation({
-    mutationFn: ({ date, score, note }: { date: string; score: number; note: string }) =>
-      upsertMoodLog(userId!, date, score, note),
+    mutationFn: ({ date, score, note, emoji }: { date: string; score: number; note: string; emoji: string }) =>
+      upsertMoodLog(userId!, date, score, note, emoji),
     onSuccess: () => {
       setSelectedMoodDate(null);
       invalidate();
@@ -161,7 +193,265 @@ export default function DevPessoalScreen() {
     },
   });
 
-  const selectedMoodLog = selectedMoodDate ? moodLogs.find((l) => l.log_date === selectedMoodDate) : undefined;
+  const selectedMoodLog = selectedMoodDate
+    ? moodLogs.find((l) => l.log_date === selectedMoodDate) ?? heatmapMoodLogs.find((l) => l.log_date === selectedMoodDate)
+    : undefined;
+
+  return (
+    <View style={{ gap: 20 }}>
+      <View style={{ gap: 4 }}>
+        <Text style={{ fontSize: 32 }}>🌱</Text>
+        <Text style={{ fontFamily: fontFamily.display, fontSize: 26, color: tokens.text }}>
+          Dev. Pessoal
+        </Text>
+        <Text style={{ fontFamily: fontFamily.body, fontSize: 15, color: tokens.textMuted }}>
+          Motivação, metas, diário e humor.
+        </Text>
+      </View>
+
+      {query.isLoading ? (
+        <ActivityIndicator color={tokens.accent} />
+      ) : query.isError ? (
+        <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.danger }}>
+          Não deu pra carregar seus dados agora. Puxe pra atualizar ou tente de novo em instantes.
+        </Text>
+      ) : (
+        <View style={{ gap: 24 }}>
+          {/* Nível e XP */}
+          <LevelCard gamification={gamification} />
+
+          {/* Frase do dia */}
+          {phraseOfDay ? (
+            <View
+              style={{
+                backgroundColor: tokens.surfaceAlt,
+                borderRadius: 14,
+                padding: 16,
+                gap: 4,
+              }}
+            >
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+                Frase do dia
+              </Text>
+              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                "{phraseOfDay.label}"
+              </Text>
+            </View>
+          ) : null}
+
+          {/* Humor */}
+          <View style={{ gap: 10 }}>
+            <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+              Humor
+            </Text>
+            <MoodStrip
+              logs={moodLogs}
+              selectedDate={selectedMoodDate ?? toDateString(new Date())}
+              onSelectDate={(date) => setSelectedMoodDate((current) => (current === date ? null : date))}
+            />
+            {/* Esse card, quando ficava DEPOIS do
+                calendário do mês, acabava escondido/fora da área visível no desktop (tinha
+                que rolar a tela pra ver depois de tocar num dia). Movido pra cima do
+                `MonthHeatmap`, logo após a fita da semana. */}
+            {selectedMoodDate ? (
+              <MoodDayForm
+                dateLabel={formatDateLabel(selectedMoodDate)}
+                existingLog={selectedMoodLog}
+                isSaving={saveMoodMutation.isPending || deleteMoodMutation.isPending}
+                onClose={() => setSelectedMoodDate(null)}
+                onSave={(score, note, emoji) =>
+                  saveMoodMutation.mutate({ date: selectedMoodDate, score, note, emoji })
+                }
+                onDelete={() => {
+                  if (selectedMoodLog) deleteMoodMutation.mutate(selectedMoodLog.id);
+                }}
+              />
+            ) : null}
+            <MonthNav monthDate={historyMonth} onChange={setHistoryMonth} />
+            <MonthHeatmap
+              monthDate={historyMonth}
+              showMonthLabel={false}
+              selectedDate={selectedMoodDate}
+              onSelectDate={(date) => setSelectedMoodDate((current) => (current === date ? null : date))}
+              getCellColor={(dateStr) => {
+                const log = heatmapMoodLogs.find((l) => l.log_date === dateStr);
+                if (!log) return null;
+                if (log.score <= 2) return tokens.danger;
+                if (log.score === 3) return tokens.warning;
+                return tokens.success;
+              }}
+            />
+          </View>
+
+          {/* Motivações */}
+          <View style={{ gap: 10 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                Motivações
+              </Text>
+              <Pressable onPress={() => setShowMotivationForm((v) => !v)} hitSlop={8}>
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                  {showMotivationForm ? "Cancelar" : "+ Nova"}
+                </Text>
+              </Pressable>
+            </View>
+
+            {showMotivationForm ? (
+              <NewMotivationForm
+                isSaving={createMotivationMutation.isPending}
+                onCancel={() => setShowMotivationForm(false)}
+                onSubmit={(label) => createMotivationMutation.mutate(label)}
+              />
+            ) : null}
+
+            {motivations.length === 0 && !showMotivationForm ? (
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                Nenhuma motivação cadastrada ainda.
+              </Text>
+            ) : (
+              <View
+                style={{
+                  backgroundColor: tokens.surface,
+                  borderColor: tokens.border,
+                  borderWidth: 1,
+                  borderRadius: 14,
+                  padding: 14,
+                  gap: 8,
+                }}
+              >
+                {motivations.map((m) => (
+                  <MotivationRow
+                    key={m.id}
+                    motivation={m}
+                    isEditing={editingMotivationId === m.id}
+                    onStartEdit={() => setEditingMotivationId(m.id)}
+                    onCancelEdit={() => setEditingMotivationId(null)}
+                    onUpdate={(label) => updateMotivationMutation.mutate({ id: m.id, label })}
+                    isSaving={updateMotivationMutation.isPending}
+                    onDelete={() => deleteMotivationMutation.mutate(m.id)}
+                  />
+                ))}
+              </View>
+            )}
+          </View>
+
+          {/* Metas — agrupadas por situação (estilo Todoist: atrasado / em andamento / feito) */}
+          <View style={{ gap: 10 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                Metas
+              </Text>
+              <Pressable onPress={() => setShowGoalForm((v) => !v)} hitSlop={8}>
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                  {showGoalForm ? "Cancelar" : "+ Nova"}
+                </Text>
+              </Pressable>
+            </View>
+
+            {showGoalForm ? (
+              <NewGoalForm
+                isSaving={createGoalMutation.isPending}
+                onCancel={() => setShowGoalForm(false)}
+                onSubmit={(input) => createGoalMutation.mutate(input)}
+              />
+            ) : null}
+
+            {goals.length === 0 && !showGoalForm ? (
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                Nenhuma meta cadastrada ainda.
+              </Text>
+            ) : (
+              [
+                { key: "overdue", title: "Atrasadas", items: overdueGoals },
+                { key: "active", title: "Em andamento", items: activeGoals },
+                { key: "completed", title: "Concluídas", items: completedGoals },
+              ].map((group) =>
+                group.items.length === 0 ? null : (
+                  <View key={group.key} style={{ gap: 8 }}>
+                    <Text
+                      style={{
+                        fontFamily: fontFamily.bodyMedium,
+                        fontSize: 12,
+                        letterSpacing: 0.4,
+                        color: tokens.textMuted,
+                      }}
+                    >
+                      {group.title.toUpperCase()} ({group.items.length})
+                    </Text>
+                    <View style={{ gap: 8 }}>
+                      {group.items.map((goal) => (
+                        <GoalCard
+                          key={goal.id}
+                          goal={goal}
+                          isEditing={editingGoalId === goal.id}
+                          onStartEdit={() => setEditingGoalId(goal.id)}
+                          onCancelEdit={() => setEditingGoalId(null)}
+                          onUpdate={(input) => updateGoalMutation.mutate({ id: goal.id, input })}
+                          isSaving={updateGoalMutation.isPending}
+                          onToggleCompleted={() =>
+                            toggleGoalMutation.mutate({ goal, isCompleted: !!goal.completed_at })
+                          }
+                          isTogglingCompleted={toggleGoalMutation.isPending}
+                          onDelete={() => deleteGoalMutation.mutate(goal.id)}
+                        />
+                      ))}
+                    </View>
+                  </View>
+                )
+              )
+            )}
+          </View>
+
+          {/* Diário */}
+          <View style={{ gap: 10 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                Diário
+              </Text>
+              <Pressable onPress={() => setShowJournalForm((v) => !v)} hitSlop={8}>
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                  {showJournalForm ? "Cancelar" : "+ Nova entrada"}
+                </Text>
+              </Pressable>
+            </View>
+
+            {showJournalForm ? (
+              <NewJournalForm
+                isSaving={createJournalMutation.isPending}
+                onCancel={() => setShowJournalForm(false)}
+                onSubmit={(input) => createJournalMutation.mutate(input)}
+              />
+            ) : null}
+
+            {journalEntries.length === 0 && !showJournalForm ? (
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                Nenhuma entrada no diário ainda.
+              </Text>
+            ) : (
+              journalEntries.map((entry) => (
+                <JournalEntryRow
+                  key={entry.id}
+                  entry={entry}
+                  isEditing={editingJournalId === entry.id}
+                  onStartEdit={() => setEditingJournalId(entry.id)}
+                  onCancelEdit={() => setEditingJournalId(null)}
+                  onUpdate={(input) => updateJournalMutation.mutate({ id: entry.id, ...input })}
+                  isSaving={updateJournalMutation.isPending}
+                  onDelete={() => deleteJournalMutation.mutate(entry.id)}
+                />
+              ))
+            )}
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+export default function DevPessoalScreen() {
+  const { tokens } = useTheme();
+  const router = useRouter();
+  const [activeTab, setActiveTab] = useState(TABS[0].key);
 
   return (
     <Screen scroll>
@@ -173,243 +463,28 @@ export default function DevPessoalScreen() {
           </Text>
         </Pressable>
 
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontSize: 32 }}>🌱</Text>
-          <Text style={{ fontFamily: fontFamily.display, fontSize: 26, color: tokens.text }}>
-            Dev. Pessoal
-          </Text>
-          <Text style={{ fontFamily: fontFamily.body, fontSize: 15, color: tokens.textMuted }}>
-            Motivação, metas, diário e humor.
-          </Text>
+        {/* Sem cabeçalho próprio aqui — cada aba (`DevPessoalContent`/`TreinoContent`/etc.)
+           já mostra seu próprio ícone/título/descrição, então um segundo cabeçalho fixo do
+           hub só duplicava a mesma informação. */}
+        <ModuleTabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
+
+        <View style={{ marginTop: 16 }}>
+          {activeTab === "treino" ? (
+            <TreinoContent />
+          ) : activeTab === "dieta" ? (
+            <DietaContent />
+          ) : activeTab === "beleza" ? (
+            <BelezaContent />
+          ) : activeTab === "mente" ? (
+            <MenteContent />
+          ) : activeTab === "detox" ? (
+            <DetoxContent />
+          ) : activeTab === "viagens" ? (
+            <ViagensContent />
+          ) : (
+            <DevPessoalContent />
+          )}
         </View>
-
-        {query.isLoading ? (
-          <ActivityIndicator color={tokens.accent} />
-        ) : query.isError ? (
-          <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.danger }}>
-            Não deu pra carregar seus dados agora. Puxe pra atualizar ou tente de novo em instantes.
-          </Text>
-        ) : (
-          <View style={{ gap: 24 }}>
-            {/* Nível e XP */}
-            <LevelCard gamification={gamification} />
-
-            {/* Frase do dia */}
-            {phraseOfDay ? (
-              <View
-                style={{
-                  backgroundColor: tokens.surfaceAlt,
-                  borderRadius: 14,
-                  padding: 16,
-                  gap: 4,
-                }}
-              >
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
-                  Frase do dia
-                </Text>
-                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                  "{phraseOfDay.label}"
-                </Text>
-              </View>
-            ) : null}
-
-            {/* Humor */}
-            <View style={{ gap: 10 }}>
-              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                Humor
-              </Text>
-              <MoodStrip
-                logs={moodLogs}
-                selectedDate={selectedMoodDate ?? toDateString(new Date())}
-                onSelectDate={(date) => setSelectedMoodDate((current) => (current === date ? null : date))}
-              />
-              <MonthHeatmap
-                monthDate={new Date()}
-                selectedDate={selectedMoodDate}
-                onSelectDate={(date) => setSelectedMoodDate((current) => (current === date ? null : date))}
-                getCellColor={(dateStr) => {
-                  const log = moodLogs.find((l) => l.log_date === dateStr);
-                  if (!log) return null;
-                  if (log.score <= 2) return tokens.danger;
-                  if (log.score === 3) return tokens.warning;
-                  return tokens.success;
-                }}
-              />
-              {selectedMoodDate ? (
-                <MoodDayForm
-                  dateLabel={formatDateLabel(selectedMoodDate)}
-                  existingLog={selectedMoodLog}
-                  isSaving={saveMoodMutation.isPending || deleteMoodMutation.isPending}
-                  onClose={() => setSelectedMoodDate(null)}
-                  onSave={(score, note) => saveMoodMutation.mutate({ date: selectedMoodDate, score, note })}
-                  onDelete={() => {
-                    if (selectedMoodLog) deleteMoodMutation.mutate(selectedMoodLog.id);
-                  }}
-                />
-              ) : null}
-            </View>
-
-            {/* Motivações */}
-            <View style={{ gap: 10 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                  Motivações
-                </Text>
-                <Pressable onPress={() => setShowMotivationForm((v) => !v)} hitSlop={8}>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                    {showMotivationForm ? "Cancelar" : "+ Nova"}
-                  </Text>
-                </Pressable>
-              </View>
-
-              {showMotivationForm ? (
-                <NewMotivationForm
-                  isSaving={createMotivationMutation.isPending}
-                  onCancel={() => setShowMotivationForm(false)}
-                  onSubmit={(label) => createMotivationMutation.mutate(label)}
-                />
-              ) : null}
-
-              {motivations.length === 0 && !showMotivationForm ? (
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  Nenhuma motivação cadastrada ainda.
-                </Text>
-              ) : (
-                <View
-                  style={{
-                    backgroundColor: tokens.surface,
-                    borderColor: tokens.border,
-                    borderWidth: 1,
-                    borderRadius: 14,
-                    padding: 14,
-                    gap: 8,
-                  }}
-                >
-                  {motivations.map((m) => (
-                    <MotivationRow
-                      key={m.id}
-                      motivation={m}
-                      isEditing={editingMotivationId === m.id}
-                      onStartEdit={() => setEditingMotivationId(m.id)}
-                      onCancelEdit={() => setEditingMotivationId(null)}
-                      onUpdate={(label) => updateMotivationMutation.mutate({ id: m.id, label })}
-                      isSaving={updateMotivationMutation.isPending}
-                      onDelete={() => deleteMotivationMutation.mutate(m.id)}
-                    />
-                  ))}
-                </View>
-              )}
-            </View>
-
-            {/* Metas — agrupadas por situação (estilo Todoist: atrasado / em andamento / feito) */}
-            <View style={{ gap: 10 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                  Metas
-                </Text>
-                <Pressable onPress={() => setShowGoalForm((v) => !v)} hitSlop={8}>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                    {showGoalForm ? "Cancelar" : "+ Nova"}
-                  </Text>
-                </Pressable>
-              </View>
-
-              {showGoalForm ? (
-                <NewGoalForm
-                  isSaving={createGoalMutation.isPending}
-                  onCancel={() => setShowGoalForm(false)}
-                  onSubmit={(input) => createGoalMutation.mutate(input)}
-                />
-              ) : null}
-
-              {goals.length === 0 && !showGoalForm ? (
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  Nenhuma meta cadastrada ainda.
-                </Text>
-              ) : (
-                [
-                  { key: "overdue", title: "Atrasadas", items: overdueGoals },
-                  { key: "active", title: "Em andamento", items: activeGoals },
-                  { key: "completed", title: "Concluídas", items: completedGoals },
-                ].map((group) =>
-                  group.items.length === 0 ? null : (
-                    <View key={group.key} style={{ gap: 8 }}>
-                      <Text
-                        style={{
-                          fontFamily: fontFamily.bodyMedium,
-                          fontSize: 12,
-                          letterSpacing: 0.4,
-                          color: tokens.textMuted,
-                        }}
-                      >
-                        {group.title.toUpperCase()} ({group.items.length})
-                      </Text>
-                      <View style={{ gap: 8 }}>
-                        {group.items.map((goal) => (
-                          <GoalCard
-                            key={goal.id}
-                            goal={goal}
-                            isEditing={editingGoalId === goal.id}
-                            onStartEdit={() => setEditingGoalId(goal.id)}
-                            onCancelEdit={() => setEditingGoalId(null)}
-                            onUpdate={(input) => updateGoalMutation.mutate({ id: goal.id, input })}
-                            isSaving={updateGoalMutation.isPending}
-                            onToggleCompleted={() =>
-                              toggleGoalMutation.mutate({ goal, isCompleted: !!goal.completed_at })
-                            }
-                            isTogglingCompleted={toggleGoalMutation.isPending}
-                            onDelete={() => deleteGoalMutation.mutate(goal.id)}
-                          />
-                        ))}
-                      </View>
-                    </View>
-                  )
-                )
-              )}
-            </View>
-
-            {/* Diário */}
-            <View style={{ gap: 10 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                  Diário
-                </Text>
-                <Pressable onPress={() => setShowJournalForm((v) => !v)} hitSlop={8}>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                    {showJournalForm ? "Cancelar" : "+ Nova entrada"}
-                  </Text>
-                </Pressable>
-              </View>
-
-              {showJournalForm ? (
-                <NewJournalForm
-                  isSaving={createJournalMutation.isPending}
-                  onCancel={() => setShowJournalForm(false)}
-                  onSubmit={(input) => createJournalMutation.mutate(input)}
-                />
-              ) : null}
-
-              {journalEntries.length === 0 && !showJournalForm ? (
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  Nenhuma entrada no diário ainda.
-                </Text>
-              ) : (
-                journalEntries.map((entry) => (
-                  <JournalEntryRow
-                    key={entry.id}
-                    entry={entry}
-                    isEditing={editingJournalId === entry.id}
-                    onStartEdit={() => setEditingJournalId(entry.id)}
-                    onCancelEdit={() => setEditingJournalId(null)}
-                    onUpdate={(input) => updateJournalMutation.mutate({ id: entry.id, ...input })}
-                    isSaving={updateJournalMutation.isPending}
-                    onDelete={() => deleteJournalMutation.mutate(entry.id)}
-                  />
-                ))
-              )}
-            </View>
-          </View>
-        )}
       </View>
     </Screen>
   );

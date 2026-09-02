@@ -49,7 +49,11 @@ export function MoodStrip({ logs, selectedDate, onSelectDate }: MoodStripProps) 
               }}
             >
               {log ? (
-                <Text style={{ fontSize: 12, color: tokens.accentText }}>{log.score}</Text>
+                log.emoji ? (
+                  <Text style={{ fontSize: 14 }}>{log.emoji}</Text>
+                ) : (
+                  <Text style={{ fontSize: 12, color: tokens.accentText }}>{log.score}</Text>
+                )
               ) : null}
             </Pressable>
           </View>

@@ -31,6 +31,10 @@ export type MoodLog = {
   log_date: string; // YYYY-MM-DD
   score: number;
   note: string | null;
+  /** Emoji escolhido livremente pelo teclado do aparelho, opcional. Quando
+   * presente, é mostrado no lugar do emoji padrão da faixa 1..5 (`MOOD_EMOJI`); `score`
+   * continua obrigatório e é quem alimenta cor do calendário e a IA cruzada. */
+  emoji: string | null;
 };
 
 /** Emojis pra representar score 1..5 — índice 0 = score 1. Fonte única, reusada nos
@@ -59,7 +63,7 @@ export async function fetchDevPessoal() {
       .limit(100),
     supabase
       .from("mood_logs")
-      .select("id, log_date, score, note")
+      .select("id, log_date, score, note, emoji")
       .gte("log_date", toDateString(since)),
   ]);
 
@@ -74,6 +78,24 @@ export async function fetchDevPessoal() {
     journalEntries: (journalRes.data ?? []) as JournalEntry[],
     moodLogs: (moodRes.data ?? []) as MoodLog[],
   };
+}
+
+/** Só os logs de humor de um mês específico — mesmo padrão do `fetchHabitLogsForMonth` da
+ * Rotina, pra alimentar o `MonthHeatmap` ao navegar pra um mês anterior */
+export async function fetchMoodLogsForMonth(monthDate: Date): Promise<MoodLog[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("mood_logs")
+    .select("id, log_date, score, note, emoji")
+    .gte("log_date", start)
+    .lte("log_date", end);
+  if (error) throw error;
+
+  return (data ?? []) as MoodLog[];
 }
 
 // ---- Gamificação (inspirado no Habitica) ----
@@ -235,12 +257,20 @@ export async function deleteJournalEntry(id: string) {
 
 // ---- Humor diário (mood_logs) ----
 
-/** Cria ou atualiza o humor de um dia específico (upsert por ser único por user+dia). */
-export async function upsertMoodLog(userId: string, logDate: string, score: number, note: string) {
+/** Cria ou atualiza o humor de um dia específico (upsert por ser único por user+dia).
+ * `emoji` é opcional — quando vazio/`undefined`, grava `null` e a UI cai de volta
+ * pro emoji padrão do `score`. */
+export async function upsertMoodLog(
+  userId: string,
+  logDate: string,
+  score: number,
+  note: string,
+  emoji?: string
+) {
   const { error } = await supabase
     .from("mood_logs")
     .upsert(
-      { user_id: userId, log_date: logDate, score, note: note || null },
+      { user_id: userId, log_date: logDate, score, note: note || null, emoji: emoji?.trim() || null },
       { onConflict: "user_id,log_date" }
     );
   if (error) throw error;

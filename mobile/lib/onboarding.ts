@@ -18,7 +18,13 @@ export type OnboardingProfile = {
   birth_date: string | null; // YYYY-MM-DD
   height_cm: number | null;
   onboarding_completed_at: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  legal_accepted_at: string | null;
 };
+
+/** Versão atual dos termos/política — mudar aqui força reaceite (ver `app/(app)/termos.tsx`). */
+export const LEGAL_VERSION = "1.0";
 
 export type ModulePreference = {
   module_slug: string;
@@ -43,10 +49,29 @@ export const ONBOARDING_MODULE_SLUGS = [
 export async function fetchOnboardingProfile() {
   const { data, error } = await supabase
     .from("profiles")
-    .select("gender, birth_date, height_cm, onboarding_completed_at")
+    .select("gender, birth_date, height_cm, onboarding_completed_at, display_name, avatar_url, legal_accepted_at")
     .single();
   if (error) throw error;
   return data as OnboardingProfile;
+}
+
+export async function updateDisplayName(userId: string, name: string) {
+  const { error } = await supabase.from("profiles").update({ display_name: name }).eq("id", userId);
+  if (error) throw error;
+}
+
+export async function updateAvatarUrl(userId: string, url: string | null) {
+  const { error } = await supabase.from("profiles").update({ avatar_url: url }).eq("id", userId);
+  if (error) throw error;
+}
+
+/** Registra o aceite dos Termos de Uso + Política de Privacidade (versão atual). */
+export async function acceptLegalTerms(userId: string) {
+  const { error } = await supabase
+    .from("profiles")
+    .update({ legal_accepted_at: new Date().toISOString(), legal_version: LEGAL_VERSION })
+    .eq("id", userId);
+  if (error) throw error;
 }
 
 export async function fetchAllModulePreferences() {
@@ -143,11 +168,24 @@ export async function completeOnboarding(
 /** Usado na tela "Editar perfil" — atualiza gênero/nascimento/altura sem mexer no onboarding em si. */
 export async function updateOnboardingProfile(
   userId: string,
-  input: { gender: Gender | null; birthDate: string | null; heightCm: number | null }
+  input: {
+    gender: Gender | null;
+    birthDate: string | null;
+    heightCm: number | null;
+    // 02/09 — opcional, pra não afetar quem chamava isso antes sem esse campo. `undefined`
+    // não mexe no nome salvo; string vazia vira `null` (limpa o apelido, volta a usar o
+    // início do e-mail como antes).
+    displayName?: string | null;
+  }
 ) {
   const { data, error } = await supabase
     .from("profiles")
-    .update({ gender: input.gender, birth_date: input.birthDate, height_cm: input.heightCm })
+    .update({
+      gender: input.gender,
+      birth_date: input.birthDate,
+      height_cm: input.heightCm,
+      ...(input.displayName !== undefined ? { display_name: input.displayName || null } : {}),
+    })
     .eq("id", userId)
     .select("id");
   if (error) throw error;

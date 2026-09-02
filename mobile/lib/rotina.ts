@@ -52,6 +52,26 @@ export async function fetchHabitsWithLogs() {
   return { habits: (habits ?? []) as Habit[], logs: (logs ?? []) as HabitLog[] };
 }
 
+/** Só os logs de um mês específico — usado pelo `MonthHeatmap` quando a pessoa navega pra um
+ * mês anterior. Separado de `fetchHabitsWithLogs` de propósito: a streak e
+ * a semana atual continuam usando a janela rolante de sempre, esse aqui é só pra "passear" pelo
+ * histórico sem re-buscar tudo de novo a cada troca de mês. */
+export async function fetchHabitLogsForMonth(monthDate: Date): Promise<HabitLog[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("habit_logs")
+    .select("habit_id, log_date, completed")
+    .gte("log_date", start)
+    .lte("log_date", end);
+  if (error) throw error;
+
+  return (data ?? []) as HabitLog[];
+}
+
 export async function createHabit(userId: string, name: string, activeDays: number[]) {
   const { error } = await supabase
     .from("habits")
@@ -72,20 +92,25 @@ export async function deleteHabit(habitId: string) {
   if (error) throw error;
 }
 
-/** Alterna o log de hoje pro hábito e, ao completar, registra em `module_events`. */
-export async function toggleHabitToday(
+/**
+ * Alterna o log de um dia específico pro hábito e, ao completar, registra em
+ * `module_events`. Permite marcar hábito em dias que passaram
+ * sem registrar, não só hoje; antes só existia `toggleHabitToday` (data fixa
+ * internamente). Generalizado pra receber a data — `HabitRow` chama isso pra qualquer um
+ * dos últimos 7 dias, não só hoje, mas segue sem permitir data futura (ver `HabitRow`).
+ */
+export async function toggleHabitOnDate(
   userId: string,
   habit: Habit,
+  dateStr: string,
   isCurrentlyDone: boolean
 ) {
-  const today = toDateString(new Date());
-
   if (isCurrentlyDone) {
     const { error } = await supabase
       .from("habit_logs")
       .delete()
       .eq("habit_id", habit.id)
-      .eq("log_date", today);
+      .eq("log_date", dateStr);
     if (error) throw error;
     return;
   }
@@ -95,17 +120,20 @@ export async function toggleHabitToday(
   const { error } = await supabase
     .from("habit_logs")
     .upsert(
-      { habit_id: habit.id, user_id: userId, log_date: today, completed: true },
+      { habit_id: habit.id, user_id: userId, log_date: dateStr, completed: true },
       { onConflict: "habit_id,log_date" }
     );
   if (error) throw error;
 
   // Melhor esforço: se isso falhar, o hábito já foi marcado — não vale travar o usuário por causa disso.
+  // `occurred_at` usa a data do log (que pode ser um dia passado sendo corrigido agora),
+  // não o momento do toque — mesmo padrão já usado em `upsertMoodLog` (Dev. Pessoal).
   await supabase.from("module_events").insert({
     user_id: userId,
     module_slug: "rotina",
     event_type: "habit_completed",
     payload: { habit_id: habit.id, habit_name: habit.name },
+    occurred_at: new Date(`${dateStr}T12:00:00`).toISOString(),
   });
 }
 

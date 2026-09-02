@@ -156,6 +156,36 @@ export function computeTodayTasks(tasks: HomeTask[], logs: HomeTaskLog[], today 
     .map((t) => ({ task: t, scheduled: t.active_days.includes(dow), done: doneIds.has(t.id) }));
 }
 
+/** Só os logs de tarefa de um mês específico — `fetchCasa` só traz os últimos 7 dias, então o
+ * histórico de meses anteriores busca à parte, sob demanda. */
+export async function fetchHomeTaskLogsForMonth(monthDate: Date): Promise<HomeTaskLog[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("home_task_logs")
+    .select("task_id, log_date")
+    .gte("log_date", start)
+    .lte("log_date", end);
+  if (error) throw error;
+
+  return (data ?? []) as HomeTaskLog[];
+}
+
+/** % de tarefas programadas cumpridas num dia específico — mesma conta do
+ * `computeWeeklyTaskCompletion`, só que pra uma data isolada (usada pelo `MonthHeatmap` do
+ * histórico). `null` quando não havia tarefa nenhuma programada pra esse dia. */
+export function computeDayTaskCompletion(dateStr: string, tasks: HomeTask[], logs: HomeTaskLog[]): number | null {
+  const dow = new Date(`${dateStr}T12:00:00`).getDay();
+  const scheduled = tasks.filter((t) => t.active && t.active_days.includes(dow));
+  if (scheduled.length === 0) return null;
+  const doneIds = new Set(logs.filter((l) => l.log_date === dateStr).map((l) => l.task_id));
+  const done = scheduled.filter((t) => doneIds.has(t.id)).length;
+  return done / scheduled.length;
+}
+
 /** % de tarefas programadas cumpridas por dia, últimos 7 dias — mesmo formato dos outros gráficos de barra. */
 export function computeWeeklyTaskCompletion(tasks: HomeTask[], logs: HomeTaskLog[]) {
   return lastSevenDays().map((date) => {

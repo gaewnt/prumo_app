@@ -5,6 +5,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Screen } from "@/components/ui/screen";
 import { StatCard } from "@/components/ui/stat-card";
 import { WeeklyBarChart } from "@/components/charts/weekly-bar-chart";
+import { MonthHeatmap } from "@/components/ui/month-heatmap";
+import { MonthNav } from "@/components/ui/month-nav";
 import { HabitsSummaryCard } from "@/components/saude/habits-summary-card";
 import { MedicationCard } from "@/components/saude/medication-card";
 import { NewMedicationForm } from "@/components/saude/new-medication-form";
@@ -23,6 +25,8 @@ import {
   undoDoseTaken,
   computeTodayDoses,
   computeAdherenceWeekly,
+  computeDayAdherence,
+  fetchMedicationLogsForMonth,
   createAppointment,
   updateAppointment,
   deleteAppointment,
@@ -59,6 +63,17 @@ export default function SaudeScreen() {
 
   const todayDoses = computeTodayDoses(medications, medicationLogs, today);
   const adherenceWeekly = computeAdherenceWeekly(medications, medicationLogs);
+
+  // Histórico de meses anteriores — `medicationLogs` só cobre os últimos 7
+  // dias (a busca de sempre da Saúde), então aqui busca sempre o mês selecionado, inclusive o atual.
+  const now = new Date();
+  const [historyMonth, setHistoryMonth] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
+  const historyDoseLogsQuery = useQuery({
+    queryKey: ["saude", "monthLogs", userId, historyMonth.getFullYear(), historyMonth.getMonth()],
+    queryFn: () => fetchMedicationLogsForMonth(historyMonth),
+    enabled: !!userId,
+  });
+  const heatmapDoseLogs = historyDoseLogsQuery.data ?? [];
 
   const upcomingAppointments = appointments.filter((a) => !a.completed_at);
   const completedAppointments = appointments
@@ -168,6 +183,26 @@ export default function SaudeScreen() {
               <StatCard label="Adesão aos remédios — últimos 7 dias" value={`${adherenceWeekly[6].value}% hoje`}>
                 <WeeklyBarChart data={adherenceWeekly} highlightIndex={6} />
               </StatCard>
+            ) : null}
+
+            {medications.length > 0 ? (
+              <View style={{ gap: 8 }}>
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.text }}>
+                  Histórico de adesão
+                </Text>
+                <MonthNav monthDate={historyMonth} onChange={setHistoryMonth} />
+                <MonthHeatmap
+                  monthDate={historyMonth}
+                  showMonthLabel={false}
+                  getCellColor={(dateStr) => {
+                    const ratio = computeDayAdherence(dateStr, medications, heatmapDoseLogs);
+                    if (ratio === null) return null;
+                    if (ratio >= 1) return tokens.accent;
+                    if (ratio > 0) return tokens.accentMuted;
+                    return tokens.surfaceAlt;
+                  }}
+                />
+              </View>
             ) : null}
 
             <View style={{ gap: 10 }}>

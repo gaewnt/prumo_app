@@ -114,6 +114,25 @@ export async function fetchBeleza() {
   };
 }
 
+/** Só os check-ins de pele de um mês específico — mesmo padrão do `fetchHabitLogsForMonth` da
+ * Rotina, pra alimentar o `MonthHeatmap` ao navegar pra um mês anterior */
+export async function fetchSkinLogsForMonth(monthDate: Date): Promise<SkinLog[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("skin_logs")
+    .select("id, log_date, overall, texture, oiliness, sensitivity, moisture, notes")
+    .gte("log_date", start)
+    .lte("log_date", end)
+    .order("log_date", { ascending: true });
+  if (error) throw error;
+
+  return (data ?? []) as SkinLog[];
+}
+
 // ---------------------------------------------------------------------------
 // Produtos
 // ---------------------------------------------------------------------------

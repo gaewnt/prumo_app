@@ -1,5 +1,23 @@
+# Dependências / build (cada pasta com seu package.json cuida das próprias, isso aqui
+# cobre a raiz e reforça caso alguém rode algo por engano fora de mobile/)
+node_modules/
+.expo/
+dist/
+
+# Build antigo do Expo web na raiz — sobra de export, não é código-fonte.
+prumo-web-build/
+
 # Cache local da CLI do Supabase — não é código, é específico da sua máquina/sessão.
 supabase/.temp/
+
+# Notas locais de uso interno (não fazem parte do produto, ficam só no seu PC)
+mobile/CLAUDE.md
+mobile/AGENTS.md
+
+# Variáveis de ambiente / chaves — nunca committar.
+.env
+.env.local
+.env*.local
 
 # Editor / SO
 .DS_Store

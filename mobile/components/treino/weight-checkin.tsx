@@ -112,11 +112,15 @@ export function WeightCheckin({
         <TextInput
           value={weightText}
           onChangeText={setWeightText}
-          placeholder="Peso de hoje (kg)"
+          placeholder="Ex: 55,320 (55kg e 320g)"
           placeholderTextColor={tokens.textMuted}
           keyboardType="decimal-pad"
           style={{
             flex: 1,
+            // Sem isso o campo não encolhia abaixo da largura do
+            // placeholder "Ex: 55,320 (55kg e 320g)", cortando o botão "Registrar" na tela
+            // estreita do site mobile (ver mesmo padrão em `new-shopping-item-form.tsx`).
+            minWidth: 0,
             fontFamily: fontFamily.body,
             fontSize: 15,
             color: tokens.text,

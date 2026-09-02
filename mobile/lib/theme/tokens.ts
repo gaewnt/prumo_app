@@ -44,52 +44,65 @@ export type ThemeTokens = {
   chart3: string;
   chart4: string;
   chart5: string;
+  /**
+   * Degradê azul→verde da identidade visual do Prumo — usado em barras de
+   * navegação, cabeçalhos, botões de destaque e divisórias marcantes via
+   * `<LinearGradient colors={[tokens.gradientStart, tokens.gradientEnd]}>`.
+   * Não é o mesmo que `accent` (que continua sendo uma cor sólida, pra texto
+   * e ícones onde um degradê não fica legível).
+   */
+  gradientStart: string;
+  gradientEnd: string;
 };
 
 export const lightTheme: ThemeTokens = {
-  background: "#F6F4F1",
-  surface: "#FFFFFF",
-  surfaceAlt: "#EDEAE4",
-  border: "#DEDAD2",
-  text: "#201C1B",
-  textMuted: "#6F6864",
-  accent: "#7A2A38",
+  background: "#FFFFFF",
+  surface: "#F5F9FB",
+  surfaceAlt: "#E9F1F5",
+  border: "#D7E2E9",
+  text: "#152430",
+  textMuted: "#5C7386",
+  accent: "#12968A",
   accentText: "#FFFFFF",
-  accentMuted: "#F1DEE0",
-  success: "#3D7A5C",
-  successMuted: "#DFEEE6",
+  accentMuted: "#DCF2ED",
+  success: "#1E9D6B",
+  successMuted: "#DEF3E8",
   warning: "#B8862E",
   warningMuted: "#F3E7D2",
   danger: "#C1432E",
   dangerMuted: "#F6DFDA",
-  chart1: "#3C6E8F",
-  chart2: "#7A5A8F",
-  chart3: "#A67C3D",
-  chart4: "#3D8A82",
-  chart5: "#847C74",
+  chart1: "#2E6FA7",
+  chart2: "#7A5A9F",
+  chart3: "#B98232",
+  chart4: "#B15C74",
+  chart5: "#5C7386",
+  gradientStart: "#0EA8D6",
+  gradientEnd: "#1FBE9E",
 };
 
 export const darkTheme: ThemeTokens = {
-  background: "#17161A",
-  surface: "#201D21",
-  surfaceAlt: "#2B272C",
-  border: "#3A353A",
-  text: "#F2EFEC",
-  textMuted: "#A8A29C",
-  accent: "#D98D98",
-  accentText: "#2A1216",
-  accentMuted: "#3A2328",
-  success: "#6FB894",
-  successMuted: "#213229",
-  warning: "#D7A752",
-  warningMuted: "#332A18",
-  danger: "#E2705B",
-  dangerMuted: "#3A241F",
-  chart1: "#7FAFCB",
-  chart2: "#B79BCB",
-  chart3: "#CBA268",
-  chart4: "#7BC4BA",
-  chart5: "#A69C92",
+  background: "#2F455C",
+  surface: "#3A5674",
+  surfaceAlt: "#33506B",
+  border: "#4A6785",
+  text: "#EDF3F7",
+  textMuted: "#A9BFD1",
+  accent: "#34F5C5",
+  accentText: "#0B2430",
+  accentMuted: "#16394A",
+  success: "#3ED598",
+  successMuted: "#163A2E",
+  warning: "#F5B942",
+  warningMuted: "#3A2E12",
+  danger: "#F2665A",
+  dangerMuted: "#3A1B18",
+  chart1: "#6FA8DC",
+  chart2: "#B49CE0",
+  chart3: "#F0B463",
+  chart4: "#E08FA0",
+  chart5: "#9FB4C4",
+  gradientStart: "#1DCDFE",
+  gradientEnd: "#34F5C5",
 };
 
 export type ThemePreference = "system" | "light" | "dark";

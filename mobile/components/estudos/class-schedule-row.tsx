@@ -1,15 +1,18 @@
-import React from "react";
+import React, { useState } from "react";
 import { Text, View, Pressable } from "react-native";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { NewClassScheduleForm } from "@/components/estudos/new-class-schedule-form";
 import {
   CLASS_REMINDER_OPTIONS,
+  minutesBetween,
+  mostRecentOccurrenceDate,
   type ClassSchedule,
   type ClassScheduleInput,
   type Subject,
   type SubjectColorKey,
 } from "@/lib/estudos";
+import { toDateString } from "@/lib/rotina";
 
 type ClassScheduleRowProps = {
   schedule: ClassSchedule;
@@ -22,6 +25,13 @@ type ClassScheduleRowProps = {
   isSaving: boolean;
   onDelete: () => void;
   colorFor: (colorKey: SubjectColorKey) => string;
+  /** Marca a ocorrência mais recente dessa aula (hoje,
+   * ou o dia anterior mais recente em que caiu esse dia da semana, se a pessoa esqueceu de
+   * marcar na hora) como concluída, registrando a duração da aula (fim - início) como uma
+   * sessão de estudo da matéria, na data certa. Só precisa que a aula tenha hora de
+   * término cadastrada. */
+  onMarkDone?: (minutes: number, sessionDate: string) => void;
+  isMarkingDone?: boolean;
 };
 
 export function ClassScheduleRow({
@@ -35,8 +45,18 @@ export function ClassScheduleRow({
   isSaving,
   onDelete,
   colorFor,
+  onMarkDone,
+  isMarkingDone,
 }: ClassScheduleRowProps) {
   const { tokens } = useTheme();
+  const occurrenceDate = mostRecentOccurrenceDate(schedule.weekday);
+  const occurrenceDateStr = toDateString(occurrenceDate);
+  const isToday = occurrenceDateStr === toDateString(new Date());
+  const classMinutes = minutesBetween(schedule.start_time, schedule.end_time);
+  const canMarkDone = classMinutes !== null && !!onMarkDone;
+  // Confirmação local (não persistida) — some se a tela recarregar, mas evita mostrar o
+  // botão de novo imediatamente após tocar, o que convidaria a tocar duas vezes seguidas.
+  const [justMarked, setJustMarked] = useState(false);
 
   if (isEditing) {
     return (
@@ -98,6 +118,32 @@ export function ClassScheduleRow({
             🔔 {reminderLabel}
           </Text>
         ) : null}
+
+        {canMarkDone && classMinutes !== null ? (
+          justMarked ? (
+            <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12, color: tokens.success }}>
+              ✓ Estudou {formatClassDuration(classMinutes)} {isToday ? "hoje" : `em ${formatShortDate(occurrenceDateStr)}`}
+            </Text>
+          ) : (
+            <Pressable
+              onPress={() => {
+                onMarkDone?.(classMinutes, occurrenceDateStr);
+                setJustMarked(true);
+              }}
+              disabled={isMarkingDone}
+              hitSlop={4}
+              style={{ marginTop: 2 }}
+            >
+              <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.accent }}>
+                {isMarkingDone
+                  ? "Registrando…"
+                  : isToday
+                    ? `Marcar aula de hoje como concluída (+${formatClassDuration(classMinutes)})`
+                    : `Marcar aula de ${formatShortDate(occurrenceDateStr)} como concluída (+${formatClassDuration(classMinutes)})`}
+              </Text>
+            </Pressable>
+          )
+        ) : null}
       </View>
 
       <View style={{ gap: 10, alignItems: "flex-end" }}>
@@ -110,4 +156,18 @@ export function ClassScheduleRow({
       </View>
     </View>
   );
+}
+
+/** "2026-09-01" -> "01/09" — o schema guarda a data como texto ISO. */
+function formatShortDate(isoDate: string) {
+  const [, month, day] = isoDate.split("-");
+  return `${day}/${month}`;
+}
+
+/** "3h50min" / "45min" — mesmo padrão de leitura rápida usado no resto do módulo. */
+function formatClassDuration(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours === 0) return `${rest}min`;
+  return rest === 0 ? `${hours}h` : `${hours}h${rest}min`;
 }

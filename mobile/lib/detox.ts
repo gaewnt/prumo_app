@@ -106,6 +106,31 @@ export function countToday(logs: DetoxLog[], habitId: string, today = toDateStri
   return logs.filter((l) => l.habit_id === habitId && l.log_date === today).length;
 }
 
+/** Só os registros de um mês específico (todos os hábitos) — `fetchDetox` só traz os últimos
+ * 7 dias, então o histórico de meses anteriores busca à parte, sob demanda. */
+export async function fetchDetoxLogsForMonth(monthDate: Date): Promise<DetoxLog[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("detox_logs")
+    .select("id, habit_id, log_date, created_at")
+    .gte("log_date", start)
+    .lte("log_date", end)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+
+  return (data ?? []) as DetoxLog[];
+}
+
+/** Quantas vezes um hábito foi registrado num dia específico — mesma conta do `countToday`,
+ * só que pra qualquer data (usada pelo `MonthHeatmap` do histórico). */
+export function countOnDate(logs: DetoxLog[], habitId: string, dateStr: string): number {
+  return logs.filter((l) => l.habit_id === habitId && l.log_date === dateStr).length;
+}
+
 export function weeklyCountsForHabit(logs: DetoxLog[], habitId: string) {
   return lastSevenDays().map((date) => {
     const dateStr = toDateString(date);

@@ -57,6 +57,11 @@ type BookCardProps = {
   onAddQuote: (content: string) => void;
   isAddingQuote: boolean;
   onDeleteQuote: (id: string) => void;
+  editingQuoteId: string | null;
+  onStartEditQuote: (id: string) => void;
+  onCancelEditQuote: () => void;
+  onUpdateQuote: (id: string, content: string) => void;
+  isSavingQuoteEdit: boolean;
 };
 
 export function BookCard({
@@ -86,6 +91,11 @@ export function BookCard({
   onAddQuote,
   isAddingQuote,
   onDeleteQuote,
+  editingQuoteId,
+  onStartEditQuote,
+  onCancelEditQuote,
+  onUpdateQuote,
+  isSavingQuoteEdit,
 }: BookCardProps) {
   const { tokens } = useTheme();
 
@@ -239,33 +249,47 @@ export function BookCard({
 
       {quotes.length > 0 ? (
         <View style={{ gap: 8, paddingTop: 4 }}>
-          {quotes.map((quote) => (
-            <View
-              key={quote.id}
-              style={{
-                flexDirection: "row",
-                gap: 8,
-                backgroundColor: tokens.surfaceAlt,
-                borderRadius: 10,
-                padding: 10,
-              }}
-            >
-              <Text
+          {quotes.map((quote) =>
+            editingQuoteId === quote.id ? (
+              <QuoteForm
+                key={quote.id}
+                initialContent={quote.content}
+                submitLabel="Salvar alterações"
+                isSaving={isSavingQuoteEdit}
+                onCancel={onCancelEditQuote}
+                onSubmit={(content) => onUpdateQuote(quote.id, content)}
+              />
+            ) : (
+              <View
+                key={quote.id}
                 style={{
-                  flex: 1,
-                  fontFamily: fontFamily.body,
-                  fontSize: 13,
-                  fontStyle: "italic",
-                  color: tokens.text,
+                  flexDirection: "row",
+                  gap: 8,
+                  backgroundColor: tokens.surfaceAlt,
+                  borderRadius: 10,
+                  padding: 10,
                 }}
               >
-                "{quote.content}"
-              </Text>
-              <Pressable onPress={() => onDeleteQuote(quote.id)} hitSlop={8}>
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>✕</Text>
-              </Pressable>
-            </View>
-          ))}
+                <Text
+                  style={{
+                    flex: 1,
+                    fontFamily: fontFamily.body,
+                    fontSize: 13,
+                    fontStyle: "italic",
+                    color: tokens.text,
+                  }}
+                >
+                  "{quote.content}"
+                </Text>
+                <Pressable onPress={() => onStartEditQuote(quote.id)} hitSlop={8}>
+                  <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>✎</Text>
+                </Pressable>
+                <Pressable onPress={() => onDeleteQuote(quote.id)} hitSlop={8}>
+                  <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>✕</Text>
+                </Pressable>
+              </View>
+            )
+          )}
         </View>
       ) : null}
     </View>

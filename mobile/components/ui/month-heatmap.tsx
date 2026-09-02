@@ -30,6 +30,12 @@ type MonthHeatmapProps = {
   onSelectDate?: (dateStr: string) => void;
   /** Desabilita o toque em dias futuros (padrão: true). */
   disableFuture?: boolean;
+  /** Todo lugar que usa `MonthHeatmap` hoje também mostra o `MonthNav`
+   * logo acima (mesmo mês, mesma navegação), e os dois desenhavam o nome do mês — "Setembro
+   * 2026" duas vezes empilhado. Quando vem acompanhado de `MonthNav`, quem chama passa
+   * `showMonthLabel={false}` pra não repetir. Padrão `true` pra não quebrar um uso futuro
+   * isolado, sem `MonthNav` por perto. */
+  showMonthLabel?: boolean;
 };
 
 /**
@@ -43,6 +49,7 @@ export function MonthHeatmap({
   selectedDate,
   onSelectDate,
   disableFuture = true,
+  showMonthLabel = true,
 }: MonthHeatmapProps) {
   const { tokens } = useTheme();
   const year = monthDate.getFullYear();
@@ -62,9 +69,11 @@ export function MonthHeatmap({
 
   return (
     <View style={{ gap: 8 }}>
-      <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
-        {monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1)}
-      </Text>
+      {showMonthLabel ? (
+        <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
+          {monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1)}
+        </Text>
+      ) : null}
 
       <View style={{ flexDirection: "row" }}>
         {WEEKDAY_HEADERS.map((label, i) => (

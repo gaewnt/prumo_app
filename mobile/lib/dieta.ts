@@ -193,8 +193,55 @@ export async function undoLastWaterLog(userId: string, date = toDateString(new D
   if (deleteError) throw deleteError;
 }
 
+/**
+ * Corrige a quantidade do registro de água mais recente do dia —
+ * mesmo alcance de "Desfazer último": antes só dava pra apagar e lançar de novo.
+ */
+export async function updateLastWaterLog(userId: string, amountMl: number, date = toDateString(new Date())) {
+  const { data, error } = await supabase
+    .from("water_logs")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("log_date", date)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return;
+
+  const { error: updateError } = await supabase
+    .from("water_logs")
+    .update({ amount_ml: amountMl })
+    .eq("id", data.id);
+  if (updateError) throw updateError;
+}
+
 export function computeWaterToday(waterLogs: WaterLog[], today: string) {
   return waterLogs.filter((w) => w.log_date === today).reduce((sum, w) => sum + w.amount_ml, 0);
+}
+
+/** Água total de um dia qualquer — mesma conta do `computeWaterToday`, só que reaproveitada
+ * pra qualquer data (usada pelo `MonthHeatmap` do histórico de meses anteriores). */
+export function computeDayWater(dateStr: string, waterLogs: WaterLog[]): number {
+  return computeWaterToday(waterLogs, dateStr);
+}
+
+/** Só os registros de água de um mês específico — `fetchDieta` só traz os últimos 7 dias, então
+ * o histórico de meses anteriores busca à parte, sob demanda. */
+export async function fetchWaterLogsForMonth(monthDate: Date): Promise<WaterLog[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("water_logs")
+    .select("id, log_date, amount_ml")
+    .gte("log_date", start)
+    .lte("log_date", end);
+  if (error) throw error;
+
+  return (data ?? []) as WaterLog[];
 }
 
 /** Total de água por dia, últimos 7 dias — mesmo formato do gráfico de barras do Treino/Finanças. */

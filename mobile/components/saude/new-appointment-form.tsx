@@ -35,6 +35,25 @@ function toHm(date: Date | null): string {
   return `${h}:${m}`;
 }
 
+/**
+ * Máscaras pros campos de data/hora — o teclado fica em `number-pad` (só números),
+ * então a pessoa não consegue digitar "/" ou ":" manualmente. Aqui a gente extrai só
+ * os dígitos e insere os separadores sozinhos (ex: "25122026" -> "25/12/2026",
+ * "0600" -> "06:00").
+ */
+function maskDateInput(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
+function maskTimeInput(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
 function parseDateTime(dateText: string, timeText: string): Date | null {
   const dateMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dateText.trim());
   const timeMatch = /^(\d{1,2}):(\d{2})$/.exec(timeText.trim());
@@ -134,15 +153,16 @@ export function NewAppointmentForm({
       <View style={{ flexDirection: "row", gap: 8 }}>
         <TextInput
           value={dateText}
-          onChangeText={setDateText}
+          onChangeText={(text) => setDateText(maskDateInput(text))}
           placeholder="DD/MM/AAAA"
           placeholderTextColor={tokens.textMuted}
           keyboardType="number-pad"
+          maxLength={10}
           style={[inputStyle, { flex: 1 }]}
         />
         <TextInput
           value={timeText}
-          onChangeText={setTimeText}
+          onChangeText={(text) => setTimeText(maskTimeInput(text))}
           placeholder="HH:MM"
           placeholderTextColor={tokens.textMuted}
           keyboardType="number-pad"

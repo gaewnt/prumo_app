@@ -273,6 +273,35 @@ export function computeAdherenceWeekly(medications: Medication[], logs: Medicati
   });
 }
 
+/** Só os logs de dose de um mês específico — `fetchSaude` só traz o dia de hoje, então o
+ * histórico de meses anteriores busca à parte, sob demanda. */
+export async function fetchMedicationLogsForMonth(monthDate: Date): Promise<MedicationLog[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("medication_logs")
+    .select("id, medication_id, log_date, scheduled_time, taken_at")
+    .gte("log_date", start)
+    .lte("log_date", end);
+  if (error) throw error;
+
+  return (data ?? []) as MedicationLog[];
+}
+
+/** % de doses tomadas num dia específico — mesma conta do `computeAdherenceWeekly`, só que
+ * pra uma data isolada (usada pelo `MonthHeatmap` do histórico). `null` quando não havia dose
+ * nenhuma esperada nesse dia (nenhum remédio ativo agendado pro dia da semana). */
+export function computeDayAdherence(dateStr: string, medications: Medication[], logs: MedicationLog[]): number | null {
+  const dow = new Date(`${dateStr}T12:00:00`).getDay();
+  const expected = medications.filter((m) => m.active && m.active_days.includes(dow)).reduce((sum, m) => sum + m.times.length, 0);
+  if (expected === 0) return null;
+  const taken = logs.filter((l) => l.log_date === dateStr && l.taken_at).length;
+  return Math.min(taken, expected) / expected;
+}
+
 // ---------------------------------------------------------------------------
 // Compromissos
 // ---------------------------------------------------------------------------

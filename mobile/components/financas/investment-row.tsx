@@ -6,17 +6,21 @@ import { formatCurrency, type Investment } from "@/lib/financas";
 
 type InvestmentRowProps = {
   investment: Investment;
-  onUpdateAmount: (amount: number) => void;
+  /** Antes só dava pra atualizar o valor; o nome (ex: corrigir
+   * "Tesourp Selic" pra "Tesouro Selic") ficava travado pra sempre. */
+  onUpdate: (input: { name: string; amount: number }) => void;
   onDelete: () => void;
   isSaving: boolean;
 };
 
-export function InvestmentRow({ investment, onUpdateAmount, onDelete, isSaving }: InvestmentRowProps) {
+export function InvestmentRow({ investment, onUpdate, onDelete, isSaving }: InvestmentRowProps) {
   const { tokens } = useTheme();
   const [isEditing, setIsEditing] = useState(false);
+  const [name, setName] = useState(investment.name);
   const [amountText, setAmountText] = useState(String(investment.amount).replace(".", ","));
 
   const parsedAmount = Number(amountText.replace(",", "."));
+  const isValid = name.trim().length > 0 && parsedAmount >= 0;
 
   return (
     <View
@@ -45,9 +49,16 @@ export function InvestmentRow({ investment, onUpdateAmount, onDelete, isSaving }
           <ActivityIndicator color={tokens.accent} />
         ) : !isEditing ? (
           <View style={{ flexDirection: "row", gap: 12 }}>
-            <Pressable onPress={() => setIsEditing(true)} hitSlop={8}>
+            <Pressable
+              onPress={() => {
+                setName(investment.name);
+                setAmountText(String(investment.amount).replace(".", ","));
+                setIsEditing(true);
+              }}
+              hitSlop={8}
+            >
               <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                Atualizar valor
+                Editar
               </Text>
             </Pressable>
             <Pressable onPress={onDelete} hitSlop={8}>
@@ -62,10 +73,27 @@ export function InvestmentRow({ investment, onUpdateAmount, onDelete, isSaving }
       {isEditing ? (
         <View style={{ gap: 8 }}>
           <TextInput
+            value={name}
+            onChangeText={setName}
+            placeholder="Nome"
+            placeholderTextColor={tokens.textMuted}
+            autoFocus
+            style={{
+              fontFamily: fontFamily.body,
+              fontSize: 15,
+              color: tokens.text,
+              backgroundColor: tokens.surfaceAlt,
+              borderRadius: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            }}
+          />
+          <TextInput
             value={amountText}
             onChangeText={setAmountText}
+            placeholder="Valor atual"
+            placeholderTextColor={tokens.textMuted}
             keyboardType="decimal-pad"
-            autoFocus
             style={{
               fontFamily: fontFamily.body,
               fontSize: 15,
@@ -87,17 +115,17 @@ export function InvestmentRow({ investment, onUpdateAmount, onDelete, isSaving }
             </Pressable>
             <Pressable
               onPress={() => {
-                onUpdateAmount(parsedAmount);
+                onUpdate({ name: name.trim(), amount: parsedAmount });
                 setIsEditing(false);
               }}
-              disabled={!(parsedAmount >= 0)}
+              disabled={!isValid}
               style={{
                 flex: 1,
                 backgroundColor: tokens.accent,
                 borderRadius: 10,
                 paddingVertical: 10,
                 alignItems: "center",
-                opacity: parsedAmount >= 0 ? 1 : 0.6,
+                opacity: isValid ? 1 : 0.6,
               }}
             >
               <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 13, color: tokens.accentText }}>

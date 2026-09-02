@@ -6,6 +6,8 @@ import { Screen } from "@/components/ui/screen";
 import { StatCard } from "@/components/ui/stat-card";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { WeeklyBarChart } from "@/components/charts/weekly-bar-chart";
+import { MonthHeatmap } from "@/components/ui/month-heatmap";
+import { MonthNav } from "@/components/ui/month-nav";
 import { BookCard } from "@/components/biblioteca/book-card";
 import { NewBookForm } from "@/components/biblioteca/new-book-form";
 import { useTheme } from "@/lib/theme/theme-provider";
@@ -21,19 +23,21 @@ import {
   updateReadingLog,
   deleteReadingLog,
   createQuote,
+  updateQuote,
   deleteQuote,
   computeBooksFinishedThisYear,
   computeReadingStreak,
   computeWeeklyPages,
+  computeDayPages,
   STATUS_LABELS,
   type Book,
   type ReadingLog,
   type BookStatus,
 } from "@/lib/biblioteca";
 
-export default function BibliotecaScreen() {
+/** Conteúdo de Biblioteca — usado tanto na rota própria quanto como aba dentro do hub Estudos. */
+export function BibliotecaContent() {
   const { tokens } = useTheme();
-  const router = useRouter();
   const queryClient = useQueryClient();
   const userId = useAuthStore((s) => s.session?.user.id);
 
@@ -43,6 +47,7 @@ export default function BibliotecaScreen() {
   const [historyOpenIds, setHistoryOpenIds] = useState<string[]>([]);
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [quoteFormBookId, setQuoteFormBookId] = useState<string | null>(null);
+  const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ["biblioteca", userId],
@@ -65,6 +70,12 @@ export default function BibliotecaScreen() {
   const readingStreak = computeReadingStreak(logs);
   const weeklyPages = computeWeeklyPages(logs);
   const milestone = streakMilestone(readingStreak);
+
+  // Histórico de meses anteriores — `fetchBiblioteca` já traz o histórico
+  // de leitura inteiro (sem filtro de data), então aqui não precisa de busca nova: só navega
+  // o mês exibido no MonthHeatmap sobre os `logs` que já vêm na tela.
+  const now = new Date();
+  const [historyMonth, setHistoryMonth] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
 
   const readingBooks = books.filter((b) => b.status === "reading");
   const wishlistBooks = books.filter((b) => b.status === "wishlist");
@@ -129,10 +140,181 @@ export default function BibliotecaScreen() {
     },
   });
 
+  const updateQuoteMutation = useMutation({
+    mutationFn: ({ id, content }: { id: string; content: string }) => updateQuote(id, content),
+    onSuccess: () => {
+      setEditingQuoteId(null);
+      invalidate();
+    },
+  });
+
   const deleteQuoteMutation = useMutation({
     mutationFn: (id: string) => deleteQuote(id),
     onSuccess: invalidate,
   });
+
+  return (
+    <View style={{ gap: 20 }}>
+      <View style={{ gap: 4 }}>
+        <Text style={{ fontSize: 32 }}>📚</Text>
+        <Text style={{ fontFamily: fontFamily.display, fontSize: 26, color: tokens.text }}>
+          Biblioteca
+        </Text>
+        <Text style={{ fontFamily: fontFamily.body, fontSize: 15, color: tokens.textMuted }}>
+          Progresso de leitura, sequência e citações salvas.
+        </Text>
+      </View>
+
+      {query.isLoading ? (
+        <ActivityIndicator color={tokens.accent} />
+      ) : query.isError ? (
+        <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.danger }}>
+          Não deu pra carregar seus livros agora. Puxe pra atualizar ou tente de novo em instantes.
+        </Text>
+      ) : (
+        <View style={{ gap: 16 }}>
+          {metaLivros ? (
+            <StatCard
+              label={`Livros lidos em ${new Date().getFullYear()}`}
+              value={`${booksFinishedThisYear} de ${metaLivros}`}
+            >
+              <ProgressBar progress={booksFinishedThisYear / metaLivros} />
+            </StatCard>
+          ) : null}
+
+          <StatCard
+            label="Sequência de leitura"
+            value={`${readingStreak} ${readingStreak === 1 ? "dia" : "dias"}`}
+            deltaLabel={milestone ? `🏅 ${milestone} dias` : undefined}
+            deltaTone="positive"
+          >
+            <WeeklyBarChart data={weeklyPages} highlightIndex={6} />
+          </StatCard>
+
+          {logs.length > 0 ? (
+            <View style={{ gap: 8 }}>
+              <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.text }}>
+                Histórico
+              </Text>
+              <MonthNav monthDate={historyMonth} onChange={setHistoryMonth} />
+              <MonthHeatmap
+                monthDate={historyMonth}
+                showMonthLabel={false}
+                getCellColor={(dateStr) => {
+                  const pages = computeDayPages(dateStr, logs);
+                  return pages > 0 ? tokens.accent : null;
+                }}
+              />
+            </View>
+          ) : null}
+
+          {books.length === 0 && !showBookForm ? (
+            <View style={{ backgroundColor: tokens.surfaceAlt, borderRadius: 14, padding: 16, gap: 4 }}>
+              <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 14, color: tokens.text }}>
+                Nenhum livro ainda
+              </Text>
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                Adicione o que você está lendo (ou quer ler) pra acompanhar o progresso.
+              </Text>
+            </View>
+          ) : null}
+
+          {sections.map((section) =>
+            section.items.length > 0 ? (
+              <View key={section.key} style={{ gap: 10 }}>
+                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 14, color: tokens.text }}>
+                  {section.title} · {section.items.length}
+                </Text>
+                {section.items.map((book) => (
+                  <BookCard
+                    key={book.id}
+                    book={book}
+                    logs={logs}
+                    isEditingBook={editingBookId === book.id}
+                    onStartEditBook={() => setEditingBookId(book.id)}
+                    onCancelEditBook={() => setEditingBookId(null)}
+                    onUpdateBook={(input) => updateBookMutation.mutate({ book, input })}
+                    isSavingBook={updateBookMutation.isPending}
+                    onDeleteBook={() => deleteBookMutation.mutate(book.id)}
+                    showLogForm={logFormBookId === book.id}
+                    onToggleLogForm={() =>
+                      setLogFormBookId((current) => (current === book.id ? null : book.id))
+                    }
+                    onAddLog={(pagesRead) => addLogMutation.mutate({ book, pagesRead })}
+                    isAddingLog={addLogMutation.isPending}
+                    showHistory={historyOpenIds.includes(book.id)}
+                    onToggleHistory={() =>
+                      setHistoryOpenIds((current) =>
+                        current.includes(book.id)
+                          ? current.filter((id) => id !== book.id)
+                          : [...current, book.id]
+                      )
+                    }
+                    editingLogId={editingLogId}
+                    onStartEditLog={(id) => setEditingLogId(id)}
+                    onCancelEditLog={() => setEditingLogId(null)}
+                    onUpdateLog={(id, pagesRead) => {
+                      const log = findLog(id);
+                      if (!log) return;
+                      updateLogMutation.mutate({ log, book, pagesRead });
+                    }}
+                    isSavingLog={updateLogMutation.isPending}
+                    onDeleteLog={(id) => {
+                      const log = findLog(id);
+                      if (!log) return;
+                      deleteLogMutation.mutate({ log, book });
+                    }}
+                    quotes={quotes.filter((q) => q.book_id === book.id)}
+                    showQuoteForm={quoteFormBookId === book.id}
+                    onToggleQuoteForm={() =>
+                      setQuoteFormBookId((current) => (current === book.id ? null : book.id))
+                    }
+                    onAddQuote={(content) => addQuoteMutation.mutate({ bookId: book.id, content })}
+                    isAddingQuote={addQuoteMutation.isPending}
+                    onDeleteQuote={(id) => deleteQuoteMutation.mutate(id)}
+                    editingQuoteId={editingQuoteId}
+                    onStartEditQuote={(id) => setEditingQuoteId(id)}
+                    onCancelEditQuote={() => setEditingQuoteId(null)}
+                    onUpdateQuote={(id, content) => updateQuoteMutation.mutate({ id, content })}
+                    isSavingQuoteEdit={updateQuoteMutation.isPending}
+                  />
+                ))}
+              </View>
+            ) : null
+          )}
+
+          {showBookForm ? (
+            <NewBookForm
+              isSaving={createBookMutation.isPending}
+              onCancel={() => setShowBookForm(false)}
+              onSubmit={(input) => createBookMutation.mutate(input)}
+            />
+          ) : (
+            <Pressable
+              onPress={() => setShowBookForm(true)}
+              style={{
+                borderColor: tokens.border,
+                borderWidth: 1,
+                borderStyle: "dashed",
+                borderRadius: 14,
+                paddingVertical: 14,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.accent }}>
+                + Novo livro
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
+export default function BibliotecaScreen() {
+  const { tokens } = useTheme();
+  const router = useRouter();
 
   return (
     <Screen scroll>
@@ -143,138 +325,7 @@ export default function BibliotecaScreen() {
             ← Voltar
           </Text>
         </Pressable>
-
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontSize: 32 }}>📚</Text>
-          <Text style={{ fontFamily: fontFamily.display, fontSize: 26, color: tokens.text }}>
-            Biblioteca
-          </Text>
-          <Text style={{ fontFamily: fontFamily.body, fontSize: 15, color: tokens.textMuted }}>
-            Progresso de leitura, sequência e citações salvas.
-          </Text>
-        </View>
-
-        {query.isLoading ? (
-          <ActivityIndicator color={tokens.accent} />
-        ) : query.isError ? (
-          <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.danger }}>
-            Não deu pra carregar seus livros agora. Puxe pra atualizar ou tente de novo em instantes.
-          </Text>
-        ) : (
-          <View style={{ gap: 16 }}>
-            {metaLivros ? (
-              <StatCard
-                label={`Livros lidos em ${new Date().getFullYear()}`}
-                value={`${booksFinishedThisYear} de ${metaLivros}`}
-              >
-                <ProgressBar progress={booksFinishedThisYear / metaLivros} />
-              </StatCard>
-            ) : null}
-
-            <StatCard
-              label="Sequência de leitura"
-              value={`${readingStreak} ${readingStreak === 1 ? "dia" : "dias"}`}
-              deltaLabel={milestone ? `🏅 ${milestone} dias` : undefined}
-              deltaTone="positive"
-            >
-              <WeeklyBarChart data={weeklyPages} highlightIndex={6} />
-            </StatCard>
-
-            {books.length === 0 && !showBookForm ? (
-              <View style={{ backgroundColor: tokens.surfaceAlt, borderRadius: 14, padding: 16, gap: 4 }}>
-                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 14, color: tokens.text }}>
-                  Nenhum livro ainda
-                </Text>
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  Adicione o que você está lendo (ou quer ler) pra acompanhar o progresso.
-                </Text>
-              </View>
-            ) : null}
-
-            {sections.map((section) =>
-              section.items.length > 0 ? (
-                <View key={section.key} style={{ gap: 10 }}>
-                  <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 14, color: tokens.text }}>
-                    {section.title} · {section.items.length}
-                  </Text>
-                  {section.items.map((book) => (
-                    <BookCard
-                      key={book.id}
-                      book={book}
-                      logs={logs}
-                      isEditingBook={editingBookId === book.id}
-                      onStartEditBook={() => setEditingBookId(book.id)}
-                      onCancelEditBook={() => setEditingBookId(null)}
-                      onUpdateBook={(input) => updateBookMutation.mutate({ book, input })}
-                      isSavingBook={updateBookMutation.isPending}
-                      onDeleteBook={() => deleteBookMutation.mutate(book.id)}
-                      showLogForm={logFormBookId === book.id}
-                      onToggleLogForm={() =>
-                        setLogFormBookId((current) => (current === book.id ? null : book.id))
-                      }
-                      onAddLog={(pagesRead) => addLogMutation.mutate({ book, pagesRead })}
-                      isAddingLog={addLogMutation.isPending}
-                      showHistory={historyOpenIds.includes(book.id)}
-                      onToggleHistory={() =>
-                        setHistoryOpenIds((current) =>
-                          current.includes(book.id)
-                            ? current.filter((id) => id !== book.id)
-                            : [...current, book.id]
-                        )
-                      }
-                      editingLogId={editingLogId}
-                      onStartEditLog={(id) => setEditingLogId(id)}
-                      onCancelEditLog={() => setEditingLogId(null)}
-                      onUpdateLog={(id, pagesRead) => {
-                        const log = findLog(id);
-                        if (!log) return;
-                        updateLogMutation.mutate({ log, book, pagesRead });
-                      }}
-                      isSavingLog={updateLogMutation.isPending}
-                      onDeleteLog={(id) => {
-                        const log = findLog(id);
-                        if (!log) return;
-                        deleteLogMutation.mutate({ log, book });
-                      }}
-                      quotes={quotes.filter((q) => q.book_id === book.id)}
-                      showQuoteForm={quoteFormBookId === book.id}
-                      onToggleQuoteForm={() =>
-                        setQuoteFormBookId((current) => (current === book.id ? null : book.id))
-                      }
-                      onAddQuote={(content) => addQuoteMutation.mutate({ bookId: book.id, content })}
-                      isAddingQuote={addQuoteMutation.isPending}
-                      onDeleteQuote={(id) => deleteQuoteMutation.mutate(id)}
-                    />
-                  ))}
-                </View>
-              ) : null
-            )}
-
-            {showBookForm ? (
-              <NewBookForm
-                isSaving={createBookMutation.isPending}
-                onCancel={() => setShowBookForm(false)}
-                onSubmit={(input) => createBookMutation.mutate(input)}
-              />
-            ) : (
-              <Pressable
-                onPress={() => setShowBookForm(true)}
-                style={{
-                  borderColor: tokens.border,
-                  borderWidth: 1,
-                  borderStyle: "dashed",
-                  borderRadius: 14,
-                  paddingVertical: 14,
-                  alignItems: "center",
-                }}
-              >
-                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.accent }}>
-                  + Novo livro
-                </Text>
-              </Pressable>
-            )}
-          </View>
-        )}
+        <BibliotecaContent />
       </View>
     </Screen>
   );

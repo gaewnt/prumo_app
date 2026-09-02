@@ -7,7 +7,7 @@ import { MOOD_EMOJI, type MoodLog } from "@/lib/dev-pessoal";
 type MoodDayFormProps = {
   dateLabel: string;
   existingLog?: MoodLog;
-  onSave: (score: number, note: string) => void;
+  onSave: (score: number, note: string, emoji: string) => void;
   onDelete: () => void;
   onClose: () => void;
   isSaving: boolean;
@@ -17,6 +17,10 @@ export function MoodDayForm({ dateLabel, existingLog, onSave, onDelete, onClose,
   const { tokens } = useTheme();
   const [score, setScore] = useState(existingLog?.score ?? 3);
   const [note, setNote] = useState(existingLog?.note ?? "");
+  // Emoji livre digitado pelo teclado do aparelho (globo/emoji do teclado), além
+  // da faixa rápida de 1..5 abaixo. Puramente visual: quem decide a cor no calendário e
+  // alimenta a IA cruzada continua sendo `score`, escolhido nos botões.
+  const [emoji, setEmoji] = useState(existingLog?.emoji ?? "");
 
   return (
     <View
@@ -52,6 +56,31 @@ export function MoodDayForm({ dateLabel, existingLog, onSave, onDelete, onClose,
           );
         })}
       </View>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <TextInput
+          value={emoji}
+          onChangeText={(text) => {
+            // Fica só com o ÚLTIMO caractere digitado (na prática, o emoji escolhido no
+            // teclado) — evita que a pessoa acumule vários emojis seguidos sem querer.
+            const chars = Array.from(text);
+            setEmoji(chars.length > 0 ? chars[chars.length - 1] : "");
+          }}
+          placeholder={MOOD_EMOJI[score - 1]}
+          placeholderTextColor={tokens.textMuted}
+          style={{
+            width: 44,
+            height: 44,
+            borderRadius: 10,
+            backgroundColor: tokens.surface,
+            textAlign: "center",
+            fontSize: 18,
+          }}
+        />
+        <Text style={{ flex: 1, fontFamily: fontFamily.body, fontSize: 11.5, color: tokens.textMuted }}>
+          Toque e abra o teclado de emoji do seu aparelho pra escolher outro — deixe em
+          branco pra usar o emoji padrão da faixa acima.
+        </Text>
+      </View>
       <TextInput
         value={note}
         onChangeText={setNote}
@@ -82,7 +111,7 @@ export function MoodDayForm({ dateLabel, existingLog, onSave, onDelete, onClose,
         ) : null}
         <View style={{ flex: 1 }} />
         <Pressable
-          onPress={() => onSave(score, note.trim())}
+          onPress={() => onSave(score, note.trim(), emoji.trim())}
           disabled={isSaving}
           style={{
             backgroundColor: tokens.accent,

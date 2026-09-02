@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { Text, TextInput, View, Pressable, ActivityIndicator } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { Text, TextInput, View, Pressable, ActivityIndicator, Switch, Platform } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Screen } from "@/components/ui/screen";
@@ -8,8 +8,16 @@ import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { useAuthStore } from "@/lib/store/auth-store";
 import { supabase } from "@/lib/supabase";
-import { fetchOnboardingProfile, updateOnboardingProfile, type Gender } from "@/lib/onboarding";
+import {
+  fetchOnboardingProfile,
+  updateOnboardingProfile,
+  fetchModulePreference,
+  updateModulePreferenceField,
+  type Gender,
+} from "@/lib/onboarding";
 import { fetchLatestBodyLog, logBodyWeight } from "@/lib/treino";
+import { scheduleDailyReminder, cancelReminder, notificationsSupported } from "@/lib/notifications";
+import { subscribeWebPush, unsubscribeWebPush, webPushSupported } from "@/lib/web-push";
 
 function SectionLabel({ children }: { children: string }) {
   const { tokens } = useTheme();
@@ -38,13 +46,115 @@ export default function PerfilScreen() {
     enabled: !!userId,
   });
 
+  // Lembrete diário de lançamento — antes só existia dentro de
+  // Finanças (Configurações), avisando só de "lançar despesas e receitas". Virou
+  // uma opção geral no Perfil, pra lembrar de registrar o dia de um jeito genérico
+  // (qualquer módulo), não só Finanças. Guardado em `module_preferences` com slug "app"
+  // (mesmo lugar do bloqueio por biometria — preferência do app como um todo).
+  const appPrefsQuery = useQuery({
+    queryKey: ["app-prefs", userId],
+    queryFn: () => fetchModulePreference("app"),
+    enabled: !!userId,
+  });
+  const lembreteId = appPrefsQuery.data?.lembrete_diario_id as string | null | undefined;
+  const lembreteHora = (appPrefsQuery.data?.lembrete_diario_hora as string | undefined) ?? "20:00";
+  const lembreteAtivo = !!lembreteId;
+  const [editingHora, setEditingHora] = useState(false);
+  const [horaText, setHoraText] = useState(lembreteHora);
+
+  // Migração de uma vez — se a pessoa já tinha ativado o lembrete antigo (só em
+  // Finanças), traz pra cá e desativa lá, pra não ficar um alarme órfão sem controle na
+  // tela nova. Só roda quando os dois já carregaram e a versão nova ainda não tem nada
+  // salvo (evita rodar de novo toda vez que a tela abre).
+  const migratedRef = useRef(false);
+  useEffect(() => {
+    if (migratedRef.current || !userId || !appPrefsQuery.data) return;
+    if (appPrefsQuery.data.lembrete_diario_id) return; // já migrado ou já configurado na versão nova
+    migratedRef.current = true;
+    (async () => {
+      const legacy = await fetchModulePreference("financas");
+      const legacyId = legacy.lembrete_diario_id as string | null | undefined;
+      const legacyHora = legacy.lembrete_diario_hora as string | undefined;
+      if (!legacyId) return;
+      await updateModulePreferenceField(userId, "app", {
+        lembrete_diario_id: legacyId,
+        lembrete_diario_hora: legacyHora ?? "20:00",
+      });
+      await updateModulePreferenceField(userId, "financas", { lembrete_diario_id: null });
+      queryClient.invalidateQueries({ queryKey: ["app-prefs", userId] });
+    })();
+  }, [appPrefsQuery.data, userId, queryClient]);
+
+  // `expo-notifications` não funciona na web de jeito
+  // nenhum, então na versão site o caminho é outro: Web Push de verdade (inscrição do
+  // navegador salva em `push_subscriptions`, disparada por um agendador do lado do
+  // servidor — ver `lib/web-push.ts` e `supabase/functions/send-web-push`). O
+  // `lembrete_diario_id` guardado nesse caso é só um marcador fixo ("web-push"), já que
+  // não existe um id de notificação nativo pra cancelar depois — quem controla se está
+  // ativo é a linha em `push_subscriptions`.
+  const reminderSupported = Platform.OS === "web" ? webPushSupported : notificationsSupported;
+
+  const toggleLembreteMutation = useMutation({
+    mutationFn: async (ativar: boolean) => {
+      if (Platform.OS === "web") {
+        if (ativar) {
+          const result = await subscribeWebPush(userId!);
+          if (!result.ok) {
+            const messages: Record<typeof result.reason, string> = {
+              unsupported: "Seu navegador não suporta notificações push.",
+              denied:
+                "Permissão de notificação negada. Pra ativar, mude isso nas configurações do site no navegador (ícone de cadeado/sino na barra de endereço) e tente de novo.",
+              timeout:
+                "Não recebemos resposta ao pedido de permissão. Olhe se apareceu um aviso perto da barra de endereço (às vezes é só um ícone, não um popup) e tente de novo.",
+              error:
+                "Não deu pra ativar. Verifique se você permitiu notificações pra este site nas configurações do navegador.",
+            };
+            throw new Error(messages[result.reason]);
+          }
+          await updateModulePreferenceField(userId!, "app", {
+            lembrete_diario_id: "web-push",
+            lembrete_diario_hora: horaText || lembreteHora,
+          });
+        } else {
+          await unsubscribeWebPush();
+          await updateModulePreferenceField(userId!, "app", { lembrete_diario_id: null });
+        }
+        return;
+      }
+      if (ativar) {
+        const id = await scheduleDailyReminder(
+          horaText || lembreteHora,
+          "Prumo",
+          "Não esqueça de registrar o que rolou hoje."
+        );
+        await updateModulePreferenceField(userId!, "app", {
+          lembrete_diario_id: id,
+          lembrete_diario_hora: horaText || lembreteHora,
+        });
+      } else {
+        await cancelReminder(lembreteId);
+        await updateModulePreferenceField(userId!, "app", { lembrete_diario_id: null });
+      }
+    },
+    onSuccess: () => {
+      setEditingHora(false);
+      queryClient.invalidateQueries({ queryKey: ["app-prefs", userId] });
+    },
+  });
+
   const [gender, setGender] = useState<Gender | null>(null);
   const [birthDay, setBirthDay] = useState("");
   const [birthMonth, setBirthMonth] = useState("");
   const [birthYear, setBirthYear] = useState("");
   const [heightText, setHeightText] = useState("");
   const [weightText, setWeightText] = useState("");
+  // Como você quer ser chamada — antes o app só usava o início do
+  // e-mail como nome, sem nenhum jeito de personalizar. `display_name`/`updateDisplayName`
+  // já existiam no schema desde o onboarding original, mas nunca tinham UI nenhuma ligada.
+  const [displayNameText, setDisplayNameText] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const birthMonthRef = useRef<TextInput>(null);
+  const birthYearRef = useRef<TextInput>(null);
 
   useEffect(() => {
     if (!query.data || hydrated) return;
@@ -57,6 +167,7 @@ export default function PerfilScreen() {
       setBirthDay(d);
     }
     if (profile.height_cm) setHeightText(String(profile.height_cm));
+    if (profile.display_name) setDisplayNameText(profile.display_name);
     if (latestWeight) setWeightText(String(latestWeight.weight_kg));
     setHydrated(true);
   }, [query.data, hydrated]);
@@ -78,7 +189,12 @@ export default function PerfilScreen() {
       const heightCm = heightText ? Number(heightText.replace(",", ".")) : null;
       const weightKg = weightText ? Number(weightText.replace(",", ".")) : null;
 
-      await updateOnboardingProfile(freshUserId, { gender, birthDate, heightCm });
+      await updateOnboardingProfile(freshUserId, {
+        gender,
+        birthDate,
+        heightCm,
+        displayName: displayNameText.trim(),
+      });
       if (weightKg && weightKg > 0) {
         await logBodyWeight(freshUserId, weightKg);
       }
@@ -86,6 +202,9 @@ export default function PerfilScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["perfil", userId] });
       queryClient.invalidateQueries({ queryKey: ["treino", userId] });
+      // Nome mostrado na saudação da Home vem de outra query (`onboarding-status`) — sem
+      // isso invalidar aqui, o nome novo só apareceria depois de fechar e abrir o app.
+      queryClient.invalidateQueries({ queryKey: ["onboarding-status", userId] });
       router.back();
     },
   });
@@ -119,6 +238,21 @@ export default function PerfilScreen() {
         ) : (
           <View style={{ gap: 24 }}>
             <View style={{ gap: 10 }}>
+              <SectionLabel>Como você quer ser chamada?</SectionLabel>
+              <TextInput
+                value={displayNameText}
+                onChangeText={setDisplayNameText}
+                placeholder="Ex: Ana, Ana Lívia..."
+                placeholderTextColor={tokens.textMuted}
+                maxLength={40}
+                style={fieldStyle}
+              />
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 11.5, color: tokens.textMuted }}>
+                Aparece na saudação da tela inicial. Deixe em branco pra usar o início do seu e-mail.
+              </Text>
+            </View>
+
+            <View style={{ gap: 10 }}>
               <SectionLabel>Gênero</SectionLabel>
               <View style={{ flexDirection: "row", gap: 8 }}>
                 <View style={{ flex: 1 }}>
@@ -138,7 +272,11 @@ export default function PerfilScreen() {
               <View style={{ flexDirection: "row", gap: 8 }}>
                 <TextInput
                   value={birthDay}
-                  onChangeText={(t) => setBirthDay(t.replace(/\D/g, "").slice(0, 2))}
+                  onChangeText={(t) => {
+                    const digits = t.replace(/\D/g, "").slice(0, 2);
+                    setBirthDay(digits);
+                    if (digits.length === 2) birthMonthRef.current?.focus();
+                  }}
                   placeholder="DD"
                   placeholderTextColor={tokens.textMuted}
                   keyboardType="number-pad"
@@ -146,8 +284,13 @@ export default function PerfilScreen() {
                   style={[fieldStyle, { width: 64, textAlign: "center", fontFamily: fontFamily.mono }]}
                 />
                 <TextInput
+                  ref={birthMonthRef}
                   value={birthMonth}
-                  onChangeText={(t) => setBirthMonth(t.replace(/\D/g, "").slice(0, 2))}
+                  onChangeText={(t) => {
+                    const digits = t.replace(/\D/g, "").slice(0, 2);
+                    setBirthMonth(digits);
+                    if (digits.length === 2) birthYearRef.current?.focus();
+                  }}
                   placeholder="MM"
                   placeholderTextColor={tokens.textMuted}
                   keyboardType="number-pad"
@@ -155,6 +298,7 @@ export default function PerfilScreen() {
                   style={[fieldStyle, { width: 64, textAlign: "center", fontFamily: fontFamily.mono }]}
                 />
                 <TextInput
+                  ref={birthYearRef}
                   value={birthYear}
                   onChangeText={(t) => setBirthYear(t.replace(/\D/g, "").slice(0, 4))}
                   placeholder="AAAA"
@@ -194,6 +338,84 @@ export default function PerfilScreen() {
                   style={fieldStyle}
                 />
               </View>
+            </View>
+
+            <View style={{ gap: 10 }}>
+              <SectionLabel>Lembretes</SectionLabel>
+              <View
+                style={{
+                  backgroundColor: tokens.surface,
+                  borderColor: tokens.border,
+                  borderWidth: 1,
+                  borderRadius: 14,
+                  padding: 14,
+                  gap: 10,
+                }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.text }}>
+                      Lembrete diário de lançamento
+                    </Text>
+                    <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted, marginTop: 2 }}>
+                      Um aviso todo dia às {lembreteHora} pra não esquecer de registrar o que rolou.
+                    </Text>
+                  </View>
+                  {toggleLembreteMutation.isPending ? (
+                    <ActivityIndicator color={tokens.accent} />
+                  ) : (
+                    <Switch
+                      value={lembreteAtivo}
+                      onValueChange={(next) => toggleLembreteMutation.mutate(next)}
+                      trackColor={{ false: tokens.surfaceAlt, true: tokens.accent }}
+                    />
+                  )}
+                </View>
+                {!reminderSupported ? (
+                  <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.warning }}>
+                    {Platform.OS === "web"
+                      ? "Seu navegador não parece suportar notificações. No iPhone/iPad, o site precisa estar Adicionado à Tela de Início (Safari em aba normal não recebe notificação)."
+                      : "Notificações só funcionam no app instalado (não no Expo Go)."}
+                  </Text>
+                ) : null}
+                {toggleLembreteMutation.isError ? (
+                  <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.danger }}>
+                    {(toggleLembreteMutation.error as Error)?.message ?? "Não deu pra ativar."}
+                  </Text>
+                ) : null}
+                {lembreteAtivo || editingHora ? (
+                  editingHora ? (
+                    <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                      <TextInput
+                        value={horaText}
+                        onChangeText={setHoraText}
+                        placeholder="HH:MM"
+                        placeholderTextColor={tokens.textMuted}
+                        style={[fieldStyle, { width: 90, fontFamily: fontFamily.mono, paddingVertical: 8 }]}
+                      />
+                      <Pressable onPress={() => toggleLembreteMutation.mutate(true)}>
+                        <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                          Salvar horário
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : (
+                    <Pressable
+                      onPress={() => {
+                        setHoraText(lembreteHora);
+                        setEditingHora(true);
+                      }}
+                    >
+                      <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                        Mudar horário
+                      </Text>
+                    </Pressable>
+                  )
+                ) : null}
+              </View>
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+                Remédios, consultas e outros lembretes ficam configurados dentro de cada módulo (ex: Saúde).
+              </Text>
             </View>
 
             {saveMutation.isError ? (

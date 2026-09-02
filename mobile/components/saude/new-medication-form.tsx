@@ -21,6 +21,17 @@ type NewMedicationFormProps = {
   isSaving: boolean;
 };
 
+/**
+ * Máscara pro campo de horário — o teclado fica em `number-pad` (só números), então
+ * a pessoa não consegue digitar o ":" manualmente. Aqui a gente extrai só os dígitos
+ * e insere o ":" sozinho depois do 2º dígito (ex: "0600" -> "06:00").
+ */
+function maskTimeInput(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
 function normalizeTime(text: string): string | null {
   const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
   if (!match) return null;
@@ -102,7 +113,7 @@ export function NewMedicationForm({
         <View style={{ flexDirection: "row", gap: 8 }}>
           <TextInput
             value={timeText}
-            onChangeText={setTimeText}
+            onChangeText={(text) => setTimeText(maskTimeInput(text))}
             placeholder="HH:MM"
             placeholderTextColor={tokens.textMuted}
             keyboardType="number-pad"

@@ -2,9 +2,11 @@ import React from "react";
 import { Text, View, Pressable, ActivityIndicator } from "react-native";
 import { Redirect, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Screen } from "@/components/ui/screen";
 import { ModuleListItem } from "@/components/ui/module-list-item";
+import { AppHeader } from "@/components/ui/app-header";
+import { AdBanner } from "@/components/ui/ad-banner";
+import { HomeWaterWidget } from "@/components/dieta/home-water-widget";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { modules } from "@/lib/modules";
@@ -21,7 +23,6 @@ function getGreeting() {
 export default function HomeScreen() {
   const { tokens } = useTheme();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const session = useAuthStore((s) => s.session);
 
   // Fase 1: trocar pelo display_name vindo de `profiles`.
@@ -43,6 +44,16 @@ export default function HomeScreen() {
   });
   const hiddenSlugs = new Set((preferencesQuery.data ?? []).filter((p) => p.hidden).map((p) => p.module_slug));
   const visibleModules = modules.filter((m) => !hiddenSlugs.has(m.slug));
+
+  // Dieta não é mais um slug de módulo de topo desde o redesign em hubs:
+  // ela só existe como sub-aba dentro do hub "dev-pessoal" (ver `hubOf` em
+  // `lib/modules.ts`). `visibleModules.some(m => m.slug === "dieta")` nunca vai ser
+  // verdadeiro, porque nenhum item de `modules` tem esse slug — por isso o card de água
+  // nunca aparecia na home, mesmo com Dieta ativa. O que precisa ser checado é se o HUB
+  // que contém "dieta" está visível (esconder módulo só acontece no nível do hub inteiro,
+  // não por aba interna — ver `configuracoes.tsx`).
+  const dietaHubModule = modules.find((m) => m.hubOf?.includes("dieta"));
+  const dietaVisible = !!dietaHubModule && !hiddenSlugs.has(dietaHubModule.slug);
 
   if (onboardingQuery.isLoading) {
     return (
@@ -85,32 +96,38 @@ export default function HomeScreen() {
     );
   }
 
+  // Aceite dos Termos de Uso / Política de Privacidade vem antes do onboarding —
+  // é a primeira coisa que qualquer conta nova (ou reaceite de versão nova) precisa confirmar.
+  if (!onboardingQuery.data?.legal_accepted_at) {
+    return <Redirect href="/aceite-termos" />;
+  }
+
   if (!onboardingQuery.data?.onboarding_completed_at) {
     return <Redirect href="/onboarding" />;
   }
 
+  const displayName = onboardingQuery.data?.display_name || firstName || "Prumo";
+
   return (
     <View style={{ flex: 1 }}>
       <Screen scroll>
-        <View style={{ gap: 28 }}>
-          <View style={{ gap: 4 }}>
-            <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.textMuted }}>
-              {getGreeting()}
-            </Text>
-            <Text style={{ fontFamily: fontFamily.display, fontSize: 26, color: tokens.text }}>
-              {firstName || "Prumo"}
-            </Text>
-            <Text
-              style={{ fontFamily: fontFamily.body, fontSize: 14.5, color: tokens.textMuted, marginTop: 2 }}
-            >
-              Como vamos melhorar sua organização hoje?
-            </Text>
-          </View>
+        <View style={{ gap: 24 }}>
+          <AppHeader
+            name={displayName}
+            avatarUrl={onboardingQuery.data?.avatar_url}
+            greeting={getGreeting()}
+            onPressAvatar={() => router.push("/perfil")}
+            onPressMic={() => router.push("/lancar-por-voz")}
+            onPressNotifications={() => router.push("/notificacoes")}
+            onPressSettings={() => router.push("/configuracoes")}
+          />
+
+          {/* Água na Home, de fácil acesso, sincronizada com Dieta
+              (mesmo cache/mesma fonte — ver `HomeWaterWidget`). Só aparece se o módulo
+              Dieta estiver ativo. */}
+          {dietaVisible ? <HomeWaterWidget /> : null}
 
           <View style={{ gap: 12 }}>
-            <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-              Módulos
-            </Text>
             {visibleModules.length === 0 ? (
               <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
                 Nenhum módulo ativo — reative algum em Configurações › Módulos.
@@ -123,33 +140,10 @@ export default function HomeScreen() {
               </View>
             )}
           </View>
+
+          <AdBanner />
         </View>
       </Screen>
-
-      <Pressable
-        onPress={() => router.push("/configuracoes")}
-        hitSlop={8}
-        style={{
-          position: "absolute",
-          right: 20,
-          bottom: insets.bottom + 20,
-          width: 52,
-          height: 52,
-          borderRadius: 26,
-          backgroundColor: tokens.surface,
-          borderColor: tokens.border,
-          borderWidth: 1,
-          alignItems: "center",
-          justifyContent: "center",
-          shadowColor: "#000",
-          shadowOpacity: 0.15,
-          shadowRadius: 8,
-          shadowOffset: { width: 0, height: 4 },
-          elevation: 4,
-        }}
-      >
-        <Text style={{ fontSize: 20 }}>⚙️</Text>
-      </Pressable>
     </View>
   );
 }

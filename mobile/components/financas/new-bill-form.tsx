@@ -4,13 +4,27 @@ import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { toDateString } from "@/lib/rotina";
 
+export type BillFormInput = { name: string; amount: number; dueDate: string; recurring: boolean };
+
 type NewBillFormProps = {
-  onSubmit: (input: { name: string; amount: number; dueDate: string; recurring: boolean }) => void;
+  initial?: { name: string; amount: number; dueDate: string; recurring: boolean };
+  submitLabel?: string;
+  onSubmit: (input: BillFormInput) => void;
   onCancel: () => void;
   isSaving: boolean;
 };
 
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+function parseBrDate(text: string): string | null {
+  const match = text.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return null;
+  const [, d, m, y] = match;
+  return `${y}-${m}-${d}`;
+}
+
+function toBrDate(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
 
 function addDays(days: number) {
   const d = new Date();
@@ -18,15 +32,20 @@ function addDays(days: number) {
   return toDateString(d);
 }
 
-export function NewBillForm({ onSubmit, onCancel, isSaving }: NewBillFormProps) {
+export function NewBillForm({ initial, submitLabel = "Salvar", onSubmit, onCancel, isSaving }: NewBillFormProps) {
   const { tokens } = useTheme();
-  const [name, setName] = useState("");
-  const [amountText, setAmountText] = useState("");
-  const [dueDate, setDueDate] = useState(addDays(7));
-  const [recurring, setRecurring] = useState(false);
+  const [name, setName] = useState(initial?.name ?? "");
+  const [amountText, setAmountText] = useState(initial ? String(initial.amount).replace(".", ",") : "");
+  const [dateText, setDateText] = useState(toBrDate(initial?.dueDate ?? addDays(7)));
+  const [recurring, setRecurring] = useState(initial?.recurring ?? false);
 
   const amount = Number(amountText.replace(",", "."));
-  const isValid = name.trim().length > 0 && amount > 0 && DATE_REGEX.test(dueDate);
+  const parsedDate = parseBrDate(dateText);
+  const isValid = name.trim().length > 0 && amount > 0 && parsedDate !== null;
+
+  function presetValue(days: number) {
+    return toBrDate(addDays(days));
+  }
 
   return (
     <View
@@ -78,25 +97,25 @@ export function NewBillForm({ onSubmit, onCancel, isSaving }: NewBillFormProps) 
         </Text>
         <View style={{ flexDirection: "row", gap: 8 }}>
           {[
-            { label: "Em 7 dias", value: addDays(7) },
-            { label: "Em 15 dias", value: addDays(15) },
-            { label: "Em 30 dias", value: addDays(30) },
+            { label: "Em 7 dias", value: presetValue(7) },
+            { label: "Em 15 dias", value: presetValue(15) },
+            { label: "Em 30 dias", value: presetValue(30) },
           ].map((preset) => (
             <Pressable
               key={preset.label}
-              onPress={() => setDueDate(preset.value)}
+              onPress={() => setDateText(preset.value)}
               style={{
                 paddingHorizontal: 12,
                 paddingVertical: 6,
                 borderRadius: 999,
-                backgroundColor: dueDate === preset.value ? tokens.accentMuted : tokens.surfaceAlt,
+                backgroundColor: dateText === preset.value ? tokens.accentMuted : tokens.surfaceAlt,
               }}
             >
               <Text
                 style={{
                   fontFamily: fontFamily.body,
                   fontSize: 12,
-                  color: dueDate === preset.value ? tokens.accent : tokens.textMuted,
+                  color: dateText === preset.value ? tokens.accent : tokens.textMuted,
                 }}
               >
                 {preset.label}
@@ -105,10 +124,12 @@ export function NewBillForm({ onSubmit, onCancel, isSaving }: NewBillFormProps) 
           ))}
         </View>
         <TextInput
-          value={dueDate}
-          onChangeText={setDueDate}
-          placeholder="AAAA-MM-DD"
+          value={dateText}
+          onChangeText={setDateText}
+          placeholder="DD/MM/AAAA"
           placeholderTextColor={tokens.textMuted}
+          keyboardType="number-pad"
+          maxLength={10}
           style={{
             fontFamily: fontFamily.mono,
             fontSize: 14,
@@ -151,7 +172,10 @@ export function NewBillForm({ onSubmit, onCancel, isSaving }: NewBillFormProps) 
           </Text>
         </Pressable>
         <Pressable
-          onPress={() => onSubmit({ name: name.trim(), amount, dueDate, recurring })}
+          onPress={() => {
+            if (!parsedDate) return;
+            onSubmit({ name: name.trim(), amount, dueDate: parsedDate, recurring });
+          }}
           disabled={isSaving || !isValid}
           style={{
             flex: 1,
@@ -166,7 +190,7 @@ export function NewBillForm({ onSubmit, onCancel, isSaving }: NewBillFormProps) 
             <ActivityIndicator color={tokens.accentText} />
           ) : (
             <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 14, color: tokens.accentText }}>
-              Salvar
+              {submitLabel}
             </Text>
           )}
         </Pressable>

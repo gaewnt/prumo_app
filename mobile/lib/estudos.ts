@@ -116,6 +116,25 @@ export async function fetchEstudos() {
   };
 }
 
+/** Só as sessões de um mês específico — mesmo padrão do `fetchHabitLogsForMonth` da Rotina,
+ * pra alimentar o `MonthHeatmap` ao navegar pra um mês anterior sem mexer na janela rolante
+ * usada pela streak/estatística da semana atual */
+export async function fetchEstudosLogsForMonth(monthDate: Date): Promise<StudySession[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("study_sessions")
+    .select("id, subject_id, duration_minutes, session_date")
+    .gte("session_date", start)
+    .lte("session_date", end);
+  if (error) throw error;
+
+  return (data ?? []) as StudySession[];
+}
+
 // ---------------------------------------------------------------------------
 // Matérias
 // ---------------------------------------------------------------------------
@@ -236,15 +255,63 @@ export function schedulesForWeekday(schedules: ClassSchedule[], weekday: number)
   return schedules.filter((s) => s.weekday === weekday).sort((a, b) => a.start_time.localeCompare(b.start_time));
 }
 
+/**
+ * Marcar uma aula agendada como concluída faz
+ * isso já contar como tempo de sessão de estudo daquela matéria (ex: aula de Robótica de
+ * segunda, marcada como concluída, vira uma sessão de estudo com a duração da aula).
+ * Duração em minutos entre dois horários "HH:MM" — `null` se `end` não existir (a aula
+ * não tem hora de término cadastrada) ou se `end` vier antes de `start` (dado inconsistente).
+ */
+export function minutesBetween(start: string, end: string | null): number | null {
+  if (!end) return null;
+  const [startH, startM] = start.split(":").map(Number);
+  const [endH, endM] = end.split(":").map(Number);
+  if ([startH, startM, endH, endM].some((n) => Number.isNaN(n))) return null;
+  const minutes = endH * 60 + endM - (startH * 60 + startM);
+  return minutes > 0 ? minutes : null;
+}
+
+/**
+ * Antes só dava pra marcar como concluída a aula do dia da semana de
+ * HOJE ("Marcar aula de hoje"); se a pessoa esquecesse de marcar no próprio dia (ex: aula
+ * de segunda, só lembrou na terça), não tinha mais como registrar aquela aula específica —
+ * só um lançamento manual de estudo, sem ligação com o horário cadastrado.
+ *
+ * Devolve a data (`Date`) da ocorrência mais recente de um dia da semana, sendo hoje
+ * mesmo se `weekday` bater com hoje. Ex: hoje é terça (2) e `weekday` é segunda (1) →
+ * devolve a data de ontem.
+ */
+export function mostRecentOccurrenceDate(weekday: number, today = new Date()): Date {
+  const diff = (today.getDay() - weekday + 7) % 7;
+  const d = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  d.setDate(d.getDate() - diff);
+  return d;
+}
+
 // ---------------------------------------------------------------------------
 // Sessões de estudo
 // ---------------------------------------------------------------------------
 
-/** Cada registro é uma linha nova (igual à água da Dieta) — dá pra desfazer o último sem zerar o dia inteiro. */
-export async function logStudySession(userId: string, subjectId: string, minutes: number) {
+/** Cada registro é uma linha nova (igual à água da Dieta) — dá pra desfazer o último sem zerar o dia inteiro.
+ * `sessionDate` — opcional; sem ele fica na data de hoje (padrão do banco), igual sempre foi.
+ * Usado por "Marcar aula anterior como concluída" (ver `mostRecentOccurrenceDate`), que precisa
+ * gravar no dia real em que a aula aconteceu, não no dia em que a pessoa lembrou de marcar. */
+export async function logStudySession(userId: string, subjectId: string, minutes: number, sessionDate?: string) {
+  const { error } = await supabase.from("study_sessions").insert({
+    user_id: userId,
+    subject_id: subjectId,
+    duration_minutes: minutes,
+    ...(sessionDate ? { session_date: sessionDate } : {}),
+  });
+  if (error) throw error;
+}
+
+/** Antes só dava pra excluir uma sessão de estudo registrada errado. */
+export async function updateStudySession(sessionId: string, subjectId: string, minutes: number) {
   const { error } = await supabase
     .from("study_sessions")
-    .insert({ user_id: userId, subject_id: subjectId, duration_minutes: minutes });
+    .update({ subject_id: subjectId, duration_minutes: minutes })
+    .eq("id", sessionId);
   if (error) throw error;
 }
 

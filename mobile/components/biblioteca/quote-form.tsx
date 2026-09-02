@@ -7,12 +7,15 @@ type QuoteFormProps = {
   onSubmit: (content: string) => void;
   onCancel: () => void;
   isSaving: boolean;
+  /** Preenche com o texto já salvo — usado pra editar. */
+  initialContent?: string;
+  submitLabel?: string;
 };
 
 /** Registro rápido de trecho/citação — texto direto, no estilo do Seeds. */
-export function QuoteForm({ onSubmit, onCancel, isSaving }: QuoteFormProps) {
+export function QuoteForm({ onSubmit, onCancel, isSaving, initialContent, submitLabel }: QuoteFormProps) {
   const { tokens } = useTheme();
-  const [content, setContent] = useState("");
+  const [content, setContent] = useState(initialContent ?? "");
   const isValid = content.trim().length > 0;
 
   return (
@@ -57,7 +60,7 @@ export function QuoteForm({ onSubmit, onCancel, isSaving }: QuoteFormProps) {
             <ActivityIndicator color={tokens.accentText} size="small" />
           ) : (
             <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 13, color: tokens.accentText }}>
-              Salvar
+              {submitLabel ?? "Salvar"}
             </Text>
           )}
         </Pressable>

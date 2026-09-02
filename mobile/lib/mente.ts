@@ -74,10 +74,38 @@ export async function fetchMente() {
   return { sessions: (data ?? []) as MindfulnessSession[] };
 }
 
+/** Só as sessões de um mês específico — mesmo motivo do `fetchHabitLogsForMonth` da Rotina:
+ * alimenta o `MonthHeatmap` ao navegar pra um mês anterior sem mexer na janela rolante usada
+ * pela streak/estatística dos últimos dias */
+export async function fetchMenteLogsForMonth(monthDate: Date): Promise<MindfulnessSession[]> {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const start = toDateString(new Date(year, month, 1));
+  const end = toDateString(new Date(year, month + 1, 0));
+
+  const { data, error } = await supabase
+    .from("mindfulness_sessions")
+    .select("id, kind, duration_minutes, session_date")
+    .gte("session_date", start)
+    .lte("session_date", end);
+  if (error) throw error;
+
+  return (data ?? []) as MindfulnessSession[];
+}
+
 export async function logMindfulnessSession(userId: string, kind: SessionKind, minutes: number) {
   const { error } = await supabase
     .from("mindfulness_sessions")
     .insert({ user_id: userId, kind, duration_minutes: minutes });
+  if (error) throw error;
+}
+
+/** Antes só dava pra excluir uma sessão registrada errado e lançar de novo. */
+export async function updateMindfulnessSession(sessionId: string, kind: SessionKind, minutes: number) {
+  const { error } = await supabase
+    .from("mindfulness_sessions")
+    .update({ kind, duration_minutes: minutes })
+    .eq("id", sessionId);
   if (error) throw error;
 }
 

@@ -63,7 +63,7 @@ export function NewExerciseForm({
           placeholder="Séries"
           placeholderTextColor={tokens.textMuted}
           keyboardType="number-pad"
-          style={[inputStyle, { flex: 1 }]}
+          style={[inputStyle, { flex: 1, minWidth: 0 }]}
         />
         <TextInput
           value={repsText}
@@ -71,7 +71,7 @@ export function NewExerciseForm({
           placeholder="Reps"
           placeholderTextColor={tokens.textMuted}
           keyboardType="number-pad"
-          style={[inputStyle, { flex: 1 }]}
+          style={[inputStyle, { flex: 1, minWidth: 0 }]}
         />
       </View>
       <TextInput

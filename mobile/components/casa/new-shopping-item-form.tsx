@@ -14,6 +14,11 @@ export function NewShoppingItemForm({ onSubmit, isSaving }: NewShoppingItemFormP
   const [name, setName] = useState("");
   const [quantity, setQuantity] = useState("");
 
+  // Os dois campos dividem a linha com `flex`, e sem `minWidth: 0` o
+  // navegador não deixa o campo encolher além da largura do próprio texto/placeholder (é o
+  // comportamento padrão de `<input>` dentro de flexbox). Na tela estreita do site mobile,
+  // isso empurrava o campo "Qtd." pra fora da borda da tela. Ver também `weight-checkin.tsx`
+  // e `new-ride-form.tsx`, que tinham o mesmo problema.
   const inputStyle = {
     fontFamily: fontFamily.body,
     fontSize: 15,
@@ -22,6 +27,7 @@ export function NewShoppingItemForm({ onSubmit, isSaving }: NewShoppingItemFormP
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
+    minWidth: 0,
   } as const;
 
   function handleSubmit() {

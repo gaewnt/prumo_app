@@ -3,6 +3,7 @@ import { Text, View, Pressable, ActivityIndicator } from "react-native";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { WeeklyBarChart } from "@/components/charts/weekly-bar-chart";
+import { MonthHeatmap } from "@/components/ui/month-heatmap";
 import { NewDetoxHabitForm } from "@/components/detox/new-detox-habit-form";
 import { DETOX_TARGET_LABELS, type DetoxHabit, type DetoxHabitInput } from "@/lib/detox";
 
@@ -10,6 +11,10 @@ type DetoxHabitCardProps = {
   habit: DetoxHabit;
   todayCount: number;
   weeklyCounts: { label: string; value: number }[];
+  /** Mês exibido no histórico — o seletor de mês fica na tela, compartilhado
+   * entre todos os hábitos; cada card só desenha o `MonthHeatmap` com a cor do dia dele. */
+  historyMonth: Date;
+  getHistoryCellColor: (dateStr: string) => string | null;
   onLogOccurrence: () => void;
   isLogging: boolean;
   onUndo: () => void;
@@ -26,6 +31,8 @@ export function DetoxHabitCard({
   habit,
   todayCount,
   weeklyCounts,
+  historyMonth,
+  getHistoryCellColor,
   onLogOccurrence,
   isLogging,
   onUndo,
@@ -89,6 +96,8 @@ export function DetoxHabitCard({
       ) : null}
 
       <WeeklyBarChart data={weeklyCounts} height={56} highlightIndex={6} />
+
+      <MonthHeatmap monthDate={historyMonth} showMonthLabel={false} getCellColor={getHistoryCellColor} />
 
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
         <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.text }}>Hoje: {todayCount}</Text>

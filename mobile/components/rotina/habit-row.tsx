@@ -15,10 +15,15 @@ import {
 type HabitRowProps = {
   habit: Habit;
   logs: HabitLog[];
-  onToggleToday: () => void;
+  /** Forma de marcar hábito em dias que passaram sem
+   * registrar. Antes só "hoje" podia ser tocado na fita de 7 dias; agora qualquer um dos
+   * últimos 7 dias pode (nunca dias futuros — ver `looksActive`/`isFuture` abaixo). */
+  onToggleDate: (dateStr: string) => void;
   onEdit: () => void;
   onDelete: () => void;
   isToggling: boolean;
+  /** Qual dos 7 dias está com a mutação em andamento (só relevante quando `isToggling`). */
+  pendingDate?: string | null;
   /** Mensagem de erro da última tentativa de marcar/desmarcar (se falhou). */
   toggleError?: string | null;
 };
@@ -26,10 +31,11 @@ type HabitRowProps = {
 export function HabitRow({
   habit,
   logs,
-  onToggleToday,
+  onToggleDate,
   onEdit,
   onDelete,
   isToggling,
+  pendingDate,
   toggleError,
 }: HabitRowProps) {
   const { tokens } = useTheme();
@@ -85,10 +91,13 @@ export function HabitRow({
           const isScheduled = habit.active_days.includes(dow);
           const isDone = doneDates.has(dateStr);
           const isToday = dateStr === today;
-          // Hoje sempre pode ser marcado, mesmo se o hábito não estiver programado pra
-          // repetir nesse dia da semana — não fazia sentido bloquear (o usuário pode
-          // querer registrar mesmo assim). Dias passados continuam só informativos.
-          const looksActive = isScheduled || isToday;
+          const isFuture = dateStr > today; // nunca deveria acontecer com `lastSevenDays()`, mas por segurança
+          const isPendingHere = isToggling && pendingDate === dateStr;
+          // Hoje e qualquer dia passado dos últimos 7 podem ser marcados/corrigidos — só
+          // dias futuros continuam bloqueados. Antes só "hoje" era tocável, o que não dava
+          // pra lançar dias esquecidos.
+          const canToggle = !isFuture;
+          const looksActive = isScheduled || isToday || isDone;
 
           const bg = isDone ? tokens.accent : looksActive ? tokens.surfaceAlt : "transparent";
           const border = isToday ? tokens.accent : tokens.border;
@@ -99,8 +108,8 @@ export function HabitRow({
                 {WEEKDAY_LABELS[dow]}
               </Text>
               <Pressable
-                onPress={isToday ? onToggleToday : undefined}
-                disabled={!isToday || isToggling}
+                onPress={canToggle ? () => onToggleDate(dateStr) : undefined}
+                disabled={!canToggle || isToggling}
                 style={{
                   width: 28,
                   height: 28,
@@ -110,9 +119,10 @@ export function HabitRow({
                   borderColor: border,
                   alignItems: "center",
                   justifyContent: "center",
+                  opacity: canToggle ? 1 : 0.5,
                 }}
               >
-                {isToday && isToggling ? (
+                {isPendingHere ? (
                   <ActivityIndicator size="small" color={isDone ? tokens.accentText : tokens.accent} />
                 ) : isDone ? (
                   <Text style={{ fontSize: 13, color: tokens.accentText }}>✓</Text>
@@ -125,7 +135,7 @@ export function HabitRow({
 
       {!isDoneToday ? (
         <Pressable
-          onPress={onToggleToday}
+          onPress={() => onToggleDate(today)}
           disabled={isToggling}
           style={{
             backgroundColor: tokens.accentMuted,

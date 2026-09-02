@@ -13,14 +13,13 @@
     "ios": {
       "supportsTablet": true,
       "userInterfaceStyle": "automatic",
-      "bundleIdentifier": "com.analivia.prumo"
+      "bundleIdentifier": "com.gaewnt.prumo"
     },
     "android": {
-      "package": "com.analivia.prumo",
+      "package": "com.gaewnt.prumo",
       "adaptiveIcon": {
         "backgroundColor": "#17161A",
         "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "userInterfaceStyle": "automatic",
@@ -33,7 +32,38 @@
     "plugins": [
       "expo-router",
       "expo-font",
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "O Prumo usa Face ID pra proteger o acesso ao app."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "O Prumo usa o microfone pra você lançar despesas por voz.",
+          "speechRecognitionPermission": "O Prumo usa o reconhecimento de voz pra entender o que você falou.",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-mark.png",
+          "imageWidth": 160,
+          "resizeMode": "contain",
+          "backgroundColor": "#2F455C"
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ],
+      "./plugins/withCopilotoAccessibility"
     ]
   }
 }
