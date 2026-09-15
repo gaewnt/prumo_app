@@ -7,6 +7,8 @@ import { FuelLogRow } from "@/components/veiculo/fuel-log-row";
 import { NewFuelLogForm, type NewFuelLogFormInput } from "@/components/veiculo/new-fuel-log-form";
 import { MaintenanceLogRow } from "@/components/veiculo/maintenance-log-row";
 import { NewMaintenanceLogForm, type NewMaintenanceLogFormInput } from "@/components/veiculo/new-maintenance-log-form";
+import { MaintenanceScheduleRow } from "@/components/veiculo/maintenance-schedule-row";
+import { NewMaintenanceScheduleForm } from "@/components/veiculo/new-maintenance-schedule-form";
 import { OdometerLogRow } from "@/components/veiculo/odometer-log-row";
 import { NewOdometerLogForm, type NewOdometerLogFormInput } from "@/components/veiculo/new-odometer-log-form";
 import { useTheme } from "@/lib/theme/theme-provider";
@@ -26,6 +28,11 @@ import {
   createMaintenanceLog,
   updateMaintenanceLog,
   deleteMaintenanceLog,
+  fetchMaintenanceSchedules,
+  createMaintenanceSchedule,
+  updateMaintenanceSchedule,
+  toggleMaintenanceScheduleDone,
+  deleteMaintenanceSchedule,
   fetchOdometerLogs,
   createOdometerLog,
   updateOdometerLog,
@@ -130,6 +137,57 @@ export default function VeiculoScreen() {
   const deleteMaintenanceMutation = useMutation({
     mutationFn: (logId: string) => deleteMaintenanceLog(logId),
     onSuccess: invalidateMaintenance,
+  });
+
+  // ============ Manutenção agendada ============
+  const [showNewScheduleForm, setShowNewScheduleForm] = useState(false);
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
+
+  const schedulesQuery = useQuery({
+    queryKey: ["veiculo-maintenance-schedules", vehicle?.id],
+    queryFn: () => fetchMaintenanceSchedules(vehicle!.id),
+    enabled: !!vehicle,
+  });
+  const schedules = schedulesQuery.data ?? [];
+  const pendingSchedules = schedules.filter((s) => !s.done);
+  const doneSchedules = schedules.filter((s) => s.done);
+
+  function invalidateSchedules() {
+    queryClient.invalidateQueries({ queryKey: ["veiculo-maintenance-schedules", vehicle?.id] });
+  }
+
+  const createScheduleMutation = useMutation({
+    mutationFn: (input: Parameters<typeof createMaintenanceSchedule>[2]) =>
+      createMaintenanceSchedule(userId!, vehicle!.id, input),
+    onSuccess: () => {
+      setShowNewScheduleForm(false);
+      invalidateSchedules();
+    },
+  });
+
+  const updateScheduleMutation = useMutation({
+    mutationFn: ({
+      schedule,
+      input,
+    }: {
+      schedule: (typeof schedules)[number];
+      input: Parameters<typeof updateMaintenanceSchedule>[1];
+    }) => updateMaintenanceSchedule(schedule, input),
+    onSuccess: () => {
+      setEditingScheduleId(null);
+      invalidateSchedules();
+    },
+  });
+
+  const toggleScheduleMutation = useMutation({
+    mutationFn: ({ schedule, done }: { schedule: (typeof schedules)[number]; done: boolean }) =>
+      toggleMaintenanceScheduleDone(schedule, done),
+    onSuccess: invalidateSchedules,
+  });
+
+  const deleteScheduleMutation = useMutation({
+    mutationFn: (schedule: (typeof schedules)[number]) => deleteMaintenanceSchedule(schedule),
+    onSuccess: invalidateSchedules,
   });
 
   // ============ Km do dia ============
@@ -394,6 +452,58 @@ export default function VeiculoScreen() {
                       isUpdating={
                         updateMaintenanceMutation.isPending && updateMaintenanceMutation.variables?.logId === log.id
                       }
+                    />
+                  ))}
+                </View>
+              )}
+            </View>
+
+            {/* ============ Manutenção agendada ============ */}
+            <View style={{ gap: 12 }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                  Manutenção agendada
+                </Text>
+                <Pressable onPress={() => setShowNewScheduleForm(!showNewScheduleForm)}>
+                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                    {showNewScheduleForm ? "Cancelar" : "+ Agendar"}
+                  </Text>
+                </Pressable>
+              </View>
+
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 12.5, color: tokens.textMuted }}>
+                Próxima manutenção prevista, por data e/ou por km — aparece na Visão Hoje
+                quando vencer ou bater o km.
+              </Text>
+
+              {showNewScheduleForm ? (
+                <NewMaintenanceScheduleForm
+                  isSaving={createScheduleMutation.isPending}
+                  onCancel={() => setShowNewScheduleForm(false)}
+                  onSubmit={(input) => createScheduleMutation.mutate(input)}
+                />
+              ) : null}
+
+              {schedulesQuery.isLoading ? (
+                <ActivityIndicator color={tokens.accent} />
+              ) : pendingSchedules.length === 0 && doneSchedules.length === 0 && !showNewScheduleForm ? (
+                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                  Nenhuma manutenção agendada ainda.
+                </Text>
+              ) : (
+                <View style={{ gap: 8 }}>
+                  {[...pendingSchedules, ...doneSchedules].map((schedule) => (
+                    <MaintenanceScheduleRow
+                      key={schedule.id}
+                      schedule={schedule}
+                      vehicle={vehicle}
+                      isEditing={editingScheduleId === schedule.id}
+                      onStartEdit={() => setEditingScheduleId(schedule.id)}
+                      onCancelEdit={() => setEditingScheduleId(null)}
+                      onUpdate={(input) => updateScheduleMutation.mutate({ schedule, input })}
+                      isSaving={updateScheduleMutation.isPending && updateScheduleMutation.variables?.schedule.id === schedule.id}
+                      onDelete={() => deleteScheduleMutation.mutate(schedule)}
+                      onToggleDone={() => toggleScheduleMutation.mutate({ schedule, done: !schedule.done })}
                     />
                   ))}
                 </View>

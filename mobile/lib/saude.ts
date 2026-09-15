@@ -17,6 +17,29 @@ import {
  * tabelas reais, nada fabricado.
  */
 
+/** "diaria" (padrão) usa `times`+`active_days`, igual sempre foi. As outras usam
+ * `next_dose_date` — uma ÚNICA próxima data prevista, sem checklist de horários — pensadas
+ * pra remédio de ciclo longo (injeção, anticoncepcional trimestral, exame periódico). */
+export type MedicationFrequencyKind = "diaria" | "dias" | "mensal" | "trimestral" | "semestral";
+
+export const MEDICATION_FREQUENCY_OPTIONS: {
+  label: string;
+  kind: MedicationFrequencyKind;
+  intervalDays: number | null;
+}[] = [
+  { label: "Todo dia", kind: "diaria", intervalDays: null },
+  { label: "A cada 7 dias", kind: "dias", intervalDays: 7 },
+  { label: "A cada 15 dias", kind: "dias", intervalDays: 15 },
+  { label: "Mensal", kind: "mensal", intervalDays: null },
+  { label: "Trimestral", kind: "trimestral", intervalDays: null },
+  { label: "Semestral", kind: "semestral", intervalDays: null },
+];
+
+export function medicationFrequencyLabel(kind: MedicationFrequencyKind, intervalDays: number | null): string {
+  const match = MEDICATION_FREQUENCY_OPTIONS.find((o) => o.kind === kind && o.intervalDays === intervalDays);
+  return match?.label ?? "Todo dia";
+}
+
 export type Medication = {
   id: string;
   name: string;
@@ -26,6 +49,9 @@ export type Medication = {
   notes: string | null;
   active: boolean;
   notification_ids: Record<string, string>;
+  frequency_kind: MedicationFrequencyKind;
+  frequency_interval_days: number | null;
+  next_dose_date: string | null; // "YYYY-MM-DD", só quando frequency_kind !== "diaria"
 };
 
 export type MedicationLog = {
@@ -90,7 +116,9 @@ export async function fetchSaude() {
   ] = await Promise.all([
     supabase
       .from("medications")
-      .select("id, name, dosage, times, active_days, notes, active, notification_ids")
+      .select(
+        "id, name, dosage, times, active_days, notes, active, notification_ids, frequency_kind, frequency_interval_days, next_dose_date"
+      )
       .order("created_at", { ascending: true }),
     supabase
       .from("medication_logs")
@@ -165,6 +193,10 @@ type MedicationInput = {
   activeDays: number[];
   notes: string;
   active: boolean;
+  frequencyKind: MedicationFrequencyKind;
+  frequencyIntervalDays: number | null;
+  /** "YYYY-MM-DD" — obrigatório quando `frequencyKind !== "diaria"`, ignorado quando é. */
+  nextDoseDate: string | null;
 };
 
 export async function createMedication(userId: string, input: MedicationInput) {
@@ -178,12 +210,15 @@ export async function createMedication(userId: string, input: MedicationInput) {
       active_days: input.activeDays,
       notes: input.notes || null,
       active: input.active,
+      frequency_kind: input.frequencyKind,
+      frequency_interval_days: input.frequencyIntervalDays,
+      next_dose_date: input.frequencyKind === "diaria" ? null : input.nextDoseDate,
     })
     .select("id")
     .single();
   if (error) throw error;
 
-  const notificationIds = input.active ? await scheduleAllTimes(input.name, input.dosage, input.times) : {};
+  const notificationIds = input.active ? await scheduleMedicationReminders(input) : {};
   if (Object.keys(notificationIds).length > 0) {
     await supabase.from("medications").update({ notification_ids: notificationIds }).eq("id", data.id);
   }
@@ -191,7 +226,7 @@ export async function createMedication(userId: string, input: MedicationInput) {
 
 export async function updateMedication(medication: Medication, input: MedicationInput) {
   await cancelReminders(Object.values(medication.notification_ids));
-  const notificationIds = input.active ? await scheduleAllTimes(input.name, input.dosage, input.times) : {};
+  const notificationIds = input.active ? await scheduleMedicationReminders(input) : {};
 
   const { error } = await supabase
     .from("medications")
@@ -203,6 +238,9 @@ export async function updateMedication(medication: Medication, input: Medication
       notes: input.notes || null,
       active: input.active,
       notification_ids: notificationIds,
+      frequency_kind: input.frequencyKind,
+      frequency_interval_days: input.frequencyIntervalDays,
+      next_dose_date: input.frequencyKind === "diaria" ? null : input.nextDoseDate,
     })
     .eq("id", medication.id);
   if (error) throw error;
@@ -222,6 +260,96 @@ async function scheduleAllTimes(name: string, dosage: string, times: string[]) {
     })
   );
   return Object.fromEntries(entries.filter(([, id]) => id !== null)) as Record<string, string>;
+}
+
+/** Remédio diário agenda um lembrete repetido por horário (como sempre); frequência não
+ * diária agenda um ÚNICO lembrete pra próxima data prevista — sem trigger nativo de
+ * "repete a cada N dias" no `expo-notifications`, a repetição é feita "na mão": cada vez
+ * que a dose é marcada como tomada (`advanceMedicationDose`), a próxima é recalculada e um
+ * novo lembrete único é agendado por cima. */
+async function scheduleMedicationReminders(input: MedicationInput): Promise<Record<string, string>> {
+  if (input.frequencyKind === "diaria") {
+    return scheduleAllTimes(input.name, input.dosage, input.times);
+  }
+  if (!input.nextDoseDate || input.times.length === 0) return {};
+  const id = await scheduleDoseReminder(input.name, input.dosage, input.nextDoseDate, input.times[0]);
+  return id ? { proxima: id } : {};
+}
+
+async function scheduleDoseReminder(name: string, dosage: string, dateStr: string, time: string) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const when = new Date(y, (m ?? 1) - 1, d, hour ?? 8, minute ?? 0, 0);
+  return scheduleOneTimeReminder(when, `Remédio: ${name}`, dosage ? `Tomar ${dosage}` : "Hora de tomar");
+}
+
+/** Data da próxima ocorrência a partir da atual, conforme a frequência escolhida. */
+export function computeNextDoseDate(
+  currentDateStr: string,
+  kind: MedicationFrequencyKind,
+  intervalDays: number | null
+): string {
+  const [y, m, d] = currentDateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  if (kind === "dias" && intervalDays) date.setDate(date.getDate() + intervalDays);
+  else if (kind === "mensal") date.setMonth(date.getMonth() + 1);
+  else if (kind === "trimestral") date.setMonth(date.getMonth() + 3);
+  else if (kind === "semestral") date.setMonth(date.getMonth() + 6);
+  return toDateString(date);
+}
+
+/**
+ * Marca a dose (de uma frequência NÃO diária) de hoje como tomada e já agenda a próxima —
+ * ex: injeção de hoje tomada -> próxima data vira "daqui a 15 dias" e o lembrete é
+ * reagendado sozinho. Diferente do remédio diário, não existe "desmarcar" aqui: não tem
+ * checklist do dia, só a próxima data prevista.
+ */
+export async function advanceMedicationDose(userId: string, medication: Medication) {
+  if (medication.frequency_kind === "diaria" || !medication.next_dose_date) return;
+
+  await logDoseTaken(userId, medication.id, medication.times[0] ?? "00:00", medication.next_dose_date);
+  await cancelReminders(Object.values(medication.notification_ids));
+
+  const nextDoseDate = computeNextDoseDate(
+    medication.next_dose_date,
+    medication.frequency_kind,
+    medication.frequency_interval_days
+  );
+  const notificationIds = medication.active
+    ? await scheduleMedicationReminders({
+        name: medication.name,
+        dosage: medication.dosage ?? "",
+        times: medication.times,
+        activeDays: medication.active_days,
+        notes: medication.notes ?? "",
+        active: medication.active,
+        frequencyKind: medication.frequency_kind,
+        frequencyIntervalDays: medication.frequency_interval_days,
+        nextDoseDate,
+      })
+    : {};
+
+  const { error } = await supabase
+    .from("medications")
+    .update({ next_dose_date: nextDoseDate, notification_ids: notificationIds })
+    .eq("id", medication.id);
+  if (error) throw error;
+}
+
+/** Frequências não diárias com próxima dose atrasada ou pra hoje — mesmo espírito do
+ * `computeTodayDoses`, mas sem checklist de horários (é só a próxima data prevista). */
+export function computeDueNonDailyMedications(
+  medications: Medication[],
+  todayStr = toDateString(new Date())
+): { medication: Medication; urgency: "atrasada" | "hoje" }[] {
+  return medications
+    .filter((m) => m.active && m.frequency_kind !== "diaria" && m.next_dose_date)
+    .map((m) => {
+      if (m.next_dose_date! > todayStr) return null;
+      const urgency: "atrasada" | "hoje" = m.next_dose_date! < todayStr ? "atrasada" : "hoje";
+      return { medication: m, urgency };
+    })
+    .filter((x): x is { medication: Medication; urgency: "atrasada" | "hoje" } => x !== null);
 }
 
 /** Marca uma dose de hoje (ou de outro dia) como tomada — upsert por remédio+data+horário. */
@@ -251,7 +379,7 @@ export function computeTodayDoses(medications: Medication[], logs: MedicationLog
     logs.filter((l) => l.log_date === today && l.taken_at).map((l) => `${l.medication_id}|${l.scheduled_time}`)
   );
   return medications
-    .filter((m) => m.active && m.active_days.includes(dow))
+    .filter((m) => m.active && m.frequency_kind === "diaria" && m.active_days.includes(dow))
     .flatMap((m) => m.times.map((time) => ({ medication: m, time, taken: takenKeys.has(`${m.id}|${time}`) })));
 }
 
@@ -266,7 +394,9 @@ export function computeAdherenceWeekly(medications: Medication[], logs: Medicati
   return days.map((day) => {
     const dateStr = toDateString(day);
     const dow = day.getDay();
-    const expected = medications.filter((m) => m.active && m.active_days.includes(dow)).reduce((sum, m) => sum + m.times.length, 0);
+    const expected = medications
+      .filter((m) => m.active && m.frequency_kind === "diaria" && m.active_days.includes(dow))
+      .reduce((sum, m) => sum + m.times.length, 0);
     const taken = logs.filter((l) => l.log_date === dateStr && l.taken_at).length;
     const value = expected > 0 ? Math.round((Math.min(taken, expected) / expected) * 100) : 0;
     return { label: WEEKDAY_LABELS[dow], value };
@@ -296,7 +426,9 @@ export async function fetchMedicationLogsForMonth(monthDate: Date): Promise<Medi
  * nenhuma esperada nesse dia (nenhum remédio ativo agendado pro dia da semana). */
 export function computeDayAdherence(dateStr: string, medications: Medication[], logs: MedicationLog[]): number | null {
   const dow = new Date(`${dateStr}T12:00:00`).getDay();
-  const expected = medications.filter((m) => m.active && m.active_days.includes(dow)).reduce((sum, m) => sum + m.times.length, 0);
+  const expected = medications
+    .filter((m) => m.active && m.frequency_kind === "diaria" && m.active_days.includes(dow))
+    .reduce((sum, m) => sum + m.times.length, 0);
   if (expected === 0) return null;
   const taken = logs.filter((l) => l.log_date === dateStr && l.taken_at).length;
   return Math.min(taken, expected) / expected;
@@ -389,4 +521,124 @@ export function daysUntil(dateIso: string, now = new Date()) {
 
 export function formatAppointmentDate(dateIso: string) {
   return new Date(dateIso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+// ---------------------------------------------------------------------------
+// Medições (pressão arterial / glicemia)
+// ---------------------------------------------------------------------------
+
+/**
+ * Registro avulso de medição — separado de remédio (que é lembrete recorrente) e de
+ * compromisso (que é evento agendado): aqui é só "medi agora, anota o número". Pressão e
+ * glicemia na mesma tabela (`kind` diferencia o formato dos campos) porque as duas são
+ * leituras rápidas do mesmo tipo — número(s) + horário — sem precisar de duas telas
+ * separadas fazendo a mesma coisa.
+ */
+export type MeasurementKind = "pressao" | "glicemia";
+
+export const MEASUREMENT_KIND_LABELS: Record<MeasurementKind, string> = {
+  pressao: "Pressão arterial",
+  glicemia: "Glicemia",
+};
+
+export type GlucoseContext = "jejum" | "pos_prandial" | "aleatoria";
+
+export const GLUCOSE_CONTEXT_LABELS: Record<GlucoseContext, string> = {
+  jejum: "Em jejum",
+  pos_prandial: "Depois de comer",
+  aleatoria: "A qualquer hora",
+};
+
+export type HealthMeasurement = {
+  id: string;
+  kind: MeasurementKind;
+  measured_at: string; // ISO
+  systolic: number | null;
+  diastolic: number | null;
+  pulse: number | null;
+  glucose_mg_dl: number | null;
+  glucose_context: GlucoseContext | null;
+  notes: string | null;
+};
+
+export async function fetchHealthMeasurements(): Promise<HealthMeasurement[]> {
+  const { data, error } = await supabase
+    .from("health_measurements")
+    .select("id, kind, measured_at, systolic, diastolic, pulse, glucose_mg_dl, glucose_context, notes")
+    .order("measured_at", { ascending: false })
+    .limit(200);
+  if (error) throw error;
+  return (data ?? []) as HealthMeasurement[];
+}
+
+type PressureInput = { measuredAt: Date; systolic: number; diastolic: number; pulse: number | null; notes: string };
+type GlucoseInput = { measuredAt: Date; glucoseMgDl: number; glucoseContext: GlucoseContext; notes: string };
+
+export async function createPressureMeasurement(userId: string, input: PressureInput) {
+  const { error } = await supabase.from("health_measurements").insert({
+    user_id: userId,
+    kind: "pressao",
+    measured_at: input.measuredAt.toISOString(),
+    systolic: input.systolic,
+    diastolic: input.diastolic,
+    pulse: input.pulse,
+    notes: input.notes || null,
+  });
+  if (error) throw error;
+}
+
+export async function createGlucoseMeasurement(userId: string, input: GlucoseInput) {
+  const { error } = await supabase.from("health_measurements").insert({
+    user_id: userId,
+    kind: "glicemia",
+    measured_at: input.measuredAt.toISOString(),
+    glucose_mg_dl: input.glucoseMgDl,
+    glucose_context: input.glucoseContext,
+    notes: input.notes || null,
+  });
+  if (error) throw error;
+}
+
+export async function deleteHealthMeasurement(id: string) {
+  const { error } = await supabase.from("health_measurements").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export type MeasurementTone = "success" | "warning" | "danger";
+
+/**
+ * Classificação de pressão arterial por faixas de referência gerais (mesmas usadas por
+ * monitores de pressão de farmácia, baseadas em diretrizes públicas de sociedades de
+ * cardiologia) — é só uma referência informativa, NÃO é diagnóstico nem substitui avaliação
+ * médica. Quando sistólica e diastólica caem em faixas diferentes, vale a mais alta das
+ * duas (convenção médica padrão).
+ */
+export function classifyBloodPressure(systolic: number, diastolic: number): { label: string; tone: MeasurementTone } {
+  if (systolic > 180 || diastolic > 120) return { label: "Crise hipertensiva — procure ajuda médica", tone: "danger" };
+  if (systolic >= 140 || diastolic >= 90) return { label: "Alta (estágio 2)", tone: "danger" };
+  if (systolic >= 130 || diastolic >= 80) return { label: "Alta (estágio 1)", tone: "warning" };
+  if (systolic >= 120) return { label: "Elevada", tone: "warning" };
+  return { label: "Normal", tone: "success" };
+}
+
+/**
+ * Classificação de glicemia por faixas de referência gerais — varia bastante com o
+ * contexto (jejum x depois de comer), então o contexto informado no registro entra na
+ * conta. Mesma ressalva: referência informativa, não é diagnóstico.
+ */
+export function classifyGlucose(mgDl: number, context: GlucoseContext): { label: string; tone: MeasurementTone } {
+  if (mgDl < 70) return { label: "Baixa", tone: "danger" };
+  if (context === "jejum") {
+    if (mgDl <= 99) return { label: "Normal", tone: "success" };
+    if (mgDl <= 125) return { label: "Elevada (referência de pré-diabetes)", tone: "warning" };
+    return { label: "Muito elevada (referência de diabetes)", tone: "danger" };
+  }
+  // Depois de comer / a qualquer hora — faixa mais alta é esperada.
+  if (mgDl <= 139) return { label: "Normal", tone: "success" };
+  if (mgDl <= 199) return { label: "Elevada (referência de pré-diabetes)", tone: "warning" };
+  return { label: "Muito elevada (referência de diabetes)", tone: "danger" };
+}
+
+export function formatMeasuredAt(iso: string): string {
+  return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }

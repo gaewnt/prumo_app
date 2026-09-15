@@ -7,6 +7,10 @@ import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { useAuthStore } from "@/lib/store/auth-store";
 import { fetchFinancas, formatCurrency } from "@/lib/financas";
+import { fetchEstudos } from "@/lib/estudos";
+import { fetchActiveVehicle, fetchFuelLogs, fetchMaintenanceLogs } from "@/lib/veiculo";
+import { MAINTENANCE_TYPE_LABELS } from "@/components/veiculo/format";
+import { fetchSaude, APPOINTMENT_KIND_LABELS } from "@/lib/saude";
 
 type Tab = "gerenciar" | "geral" | "sobre";
 
@@ -77,6 +81,45 @@ export default function MaisOpcoesScreen() {
     enabled: !!userId,
   });
 
+  // Consultas usadas só na exportação em CSV dos outros módulos — como essa tela é pouco
+  // acessada, não tem problema buscar tudo aqui em vez de reaproveitar as queries das telas
+  // de cada módulo (que não estão montadas quando "Mais opções" está aberta).
+  const estudosQuery = useQuery({
+    queryKey: ["estudos", userId],
+    queryFn: fetchEstudos,
+    enabled: !!userId,
+  });
+  const vehicleQuery = useQuery({
+    queryKey: ["veiculo-ativo", userId],
+    queryFn: fetchActiveVehicle,
+    enabled: !!userId,
+  });
+  const vehicleId = vehicleQuery.data?.id;
+  const fuelLogsQuery = useQuery({
+    queryKey: ["veiculo-abastecimentos", vehicleId],
+    queryFn: () => fetchFuelLogs(vehicleId!),
+    enabled: !!vehicleId,
+  });
+  const maintenanceLogsQuery = useQuery({
+    queryKey: ["veiculo-manutencoes", vehicleId],
+    queryFn: () => fetchMaintenanceLogs(vehicleId!),
+    enabled: !!vehicleId,
+  });
+  const saudeQuery = useQuery({
+    queryKey: ["saude", userId],
+    queryFn: fetchSaude,
+    enabled: !!userId,
+  });
+
+  async function shareCsv(header: string, rows: string[], title: string) {
+    const csv = [header, ...rows].join("\n");
+    try {
+      await Share.share({ message: csv, title });
+    } catch {
+      // pessoa cancelou o compartilhamento — não precisa de tratamento especial
+    }
+  }
+
   async function handleExportar() {
     const transactions = financasQuery.data?.transactions ?? [];
     const header = "data,tipo,categoria,descricao,valor";
@@ -85,12 +128,54 @@ export default function MaisOpcoesScreen() {
       const descricao = (t.description ?? "").replace(/,/g, ";");
       return `${t.occurred_at},${tipo},${t.category},${descricao},${t.amount}`;
     });
-    const csv = [header, ...rows].join("\n");
-    try {
-      await Share.share({ message: csv, title: "Relatório Prumo (CSV)" });
-    } catch {
-      // pessoa cancelou o compartilhamento — não precisa de tratamento especial
-    }
+    await shareCsv(header, rows, "Relatório Prumo — Finanças (CSV)");
+  }
+
+  async function handleExportarEstudos() {
+    const sessions = estudosQuery.data?.sessions ?? [];
+    const subjects = estudosQuery.data?.subjects ?? [];
+    const subjectName = new Map(subjects.map((s) => [s.id, s.name]));
+    const header = "data,materia,minutos";
+    const rows = sessions.map((s) => {
+      const materia = (subjectName.get(s.subject_id) ?? "—").replace(/,/g, ";");
+      return `${s.session_date},${materia},${s.duration_minutes}`;
+    });
+    await shareCsv(header, rows, "Relatório Prumo — Estudos (CSV)");
+  }
+
+  async function handleExportarVeiculo() {
+    const fuelLogs = fuelLogsQuery.data ?? [];
+    const maintenanceLogs = maintenanceLogsQuery.data ?? [];
+    const header = "data,tipo,descricao,valor";
+    const fuelRows = fuelLogs.map((f) => {
+      const descricao = `${f.litros} litros${f.tanque_cheio ? " · tanque cheio" : ""} · ${f.km_atual} km`;
+      return `${f.abastecido_em},abastecimento,${descricao},${f.valor_total}`;
+    });
+    const maintenanceRows = maintenanceLogs.map((m) => {
+      const descricao = `${MAINTENANCE_TYPE_LABELS[m.tipo]}${m.descricao ? ` — ${m.descricao.replace(/,/g, ";")}` : ""}`;
+      return `${m.realizado_em},manutencao,${descricao},${m.valor}`;
+    });
+    const rows = [...fuelRows, ...maintenanceRows].sort((a, b) => a.localeCompare(b));
+    await shareCsv(header, rows, "Relatório Prumo — Veículo (CSV)");
+  }
+
+  async function handleExportarSaude() {
+    const appointments = saudeQuery.data?.appointments ?? [];
+    const medications = saudeQuery.data?.medications ?? [];
+    const medicationLogs = saudeQuery.data?.medicationLogs ?? [];
+    const medicationName = new Map(medications.map((m) => [m.id, m.name]));
+    const header = "data,tipo,descricao,status";
+    const appointmentRows = appointments.map((a) => {
+      const data = a.scheduled_at.slice(0, 10);
+      const descricao = `${a.title}${a.professional ? ` · ${a.professional}` : ""}`.replace(/,/g, ";");
+      return `${data},${APPOINTMENT_KIND_LABELS[a.kind]},${descricao},${a.completed_at ? "concluída" : "agendada"}`;
+    });
+    const medicationRows = medicationLogs.map((l) => {
+      const descricao = (medicationName.get(l.medication_id) ?? "—").replace(/,/g, ";");
+      return `${l.log_date},medicamento,${descricao},${l.taken_at ? "tomado" : "pendente"}`;
+    });
+    const rows = [...appointmentRows, ...medicationRows].sort((a, b) => a.localeCompare(b));
+    await shareCsv(header, rows, "Relatório Prumo — Saúde (CSV)");
   }
 
   async function handleConvidar() {
@@ -163,11 +248,14 @@ export default function MaisOpcoesScreen() {
               <OptionRow icon="🎯" label="Objetivos" onPress={() => router.push("/modulo/financas-metas")} />
             </Card>
             <Card>
-              <OptionRow icon="📤" label="Exportar relatório (CSV)" onPress={handleExportar} isFirst />
+              <OptionRow icon="📤" label="Exportar Finanças (CSV)" onPress={handleExportar} isFirst />
+              <OptionRow icon="📚" label="Exportar Estudos (CSV)" onPress={handleExportarEstudos} />
+              <OptionRow icon="🚗" label="Exportar Veículo (CSV)" onPress={handleExportarVeiculo} />
+              <OptionRow icon="🩺" label="Exportar Saúde (CSV)" onPress={handleExportarSaude} />
               <OptionRow
                 icon="📥"
-                label="Importar dados"
-                disabledNote="Ainda não dá — precisa de um seletor de arquivo que o app não tem instalado."
+                label="Importar extrato (CSV/OFX)"
+                onPress={() => router.push("/importar-extrato")}
               />
               <OptionRow
                 icon="📱"
@@ -181,7 +269,7 @@ export default function MaisOpcoesScreen() {
               />
               <OptionRow
                 icon="⏰"
-                label="Lembrete diário"
+                label="Lembretes de registro e bem-estar"
                 onPress={() => router.push("/configuracoes")}
               />
             </Card>

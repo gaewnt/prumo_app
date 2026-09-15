@@ -7,11 +7,13 @@ import { ModuleListItem } from "@/components/ui/module-list-item";
 import { AppHeader } from "@/components/ui/app-header";
 import { AdBanner } from "@/components/ui/ad-banner";
 import { HomeWaterWidget } from "@/components/dieta/home-water-widget";
+import { TodayView } from "@/components/home/today-view";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { modules } from "@/lib/modules";
 import { useAuthStore } from "@/lib/store/auth-store";
 import { fetchOnboardingProfile, fetchAllModulePreferences } from "@/lib/onboarding";
+import { fetchPlan } from "@/lib/subscription";
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -44,6 +46,17 @@ export default function HomeScreen() {
   });
   const hiddenSlugs = new Set((preferencesQuery.data ?? []).filter((p) => p.hidden).map((p) => p.module_slug));
   const visibleModules = modules.filter((m) => !hiddenSlugs.has(m.slug));
+
+  // Plano Grátis/Plus — ver `lib/subscription.ts`. Enquanto carrega, trata como "plus"
+  // (não free) só pra não piscar banner de anúncio pra quem já é Plus; módulo trancado
+  // continua trancado até a busca confirmar o plano de qualquer forma (o próprio clique
+  // manda pra vitrine do Plus, então não há risco de deixar passar).
+  const planQuery = useQuery({
+    queryKey: ["subscription-plan", session?.user.id],
+    queryFn: fetchPlan,
+    enabled: !!session?.user.id,
+  });
+  const isFreePlan = planQuery.data === "free";
 
   // Dieta não é mais um slug de módulo de topo desde o redesign em hubs:
   // ela só existe como sub-aba dentro do hub "dev-pessoal" (ver `hubOf` em
@@ -122,6 +135,10 @@ export default function HomeScreen() {
             onPressSettings={() => router.push("/configuracoes")}
           />
 
+          {/* Visão Hoje: junta o que vence/está programado pra hoje em todos os módulos
+              ativos, num lugar só — ver `components/home/today-view.tsx`. */}
+          <TodayView hiddenSlugs={hiddenSlugs} />
+
           {/* Água na Home, de fácil acesso, sincronizada com Dieta
               (mesmo cache/mesma fonte — ver `HomeWaterWidget`). Só aparece se o módulo
               Dieta estiver ativo. */}
@@ -135,13 +152,17 @@ export default function HomeScreen() {
             ) : (
               <View style={{ gap: 10 }}>
                 {visibleModules.map((module) => (
-                  <ModuleListItem key={module.slug} module={module} />
+                  <ModuleListItem
+                    key={module.slug}
+                    module={module}
+                    locked={!!module.plusOnly && isFreePlan}
+                  />
                 ))}
               </View>
             )}
           </View>
 
-          <AdBanner />
+          {isFreePlan ? <AdBanner /> : null}
         </View>
       </Screen>
     </View>

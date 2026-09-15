@@ -7,6 +7,7 @@ import {
   VEHICLE_FUEL_CATEGORY,
   VEHICLE_MAINTENANCE_CATEGORY,
 } from "@/lib/financas";
+import { scheduleOneTimeReminder, cancelReminder } from "@/lib/notifications";
 
 /**
  * Camada de dados do módulo Veículo — cadastro do veículo de trabalho, custos
@@ -377,6 +378,18 @@ export async function fetchFuelLogs(vehicleId: string): Promise<VehicleFuelLog[]
   return (data ?? []) as VehicleFuelLog[];
 }
 
+/** Sincroniza `vehicles.km_atual` (o campo manual usado em Configurações e no resto do
+ * módulo) com o km de um abastecimento/manutenção — só AVANÇA, nunca volta: um lançamento
+ * retroativo com km menor não pode "atrasar" o km atual do veículo. Quem quiser corrigir
+ * o km atual pra um valor menor sempre pode editar direto em Configurações. */
+async function syncVehicleKmAtual(vehicleId: string, km: number | null) {
+  if (km == null) return;
+  const { data: vehicle } = await supabase.from("vehicles").select("km_atual").eq("id", vehicleId).maybeSingle();
+  if (vehicle && (vehicle.km_atual == null || km > vehicle.km_atual)) {
+    await supabase.from("vehicles").update({ km_atual: km }).eq("id", vehicleId);
+  }
+}
+
 export async function createFuelLog(
   userId: string,
   vehicleId: string,
@@ -401,6 +414,7 @@ export async function createFuelLog(
     occurredAt: fields.abastecido_em,
   });
   await supabase.from("vehicle_fuel_logs").update({ finance_transaction_id: transactionId }).eq("id", data.id);
+  await syncVehicleKmAtual(vehicleId, fields.km_atual);
 }
 
 export async function updateFuelLog(
@@ -418,7 +432,7 @@ export async function updateFuelLog(
     .from("vehicle_fuel_logs")
     .update(fields)
     .eq("id", logId)
-    .select("valor_total, abastecido_em, finance_transaction_id")
+    .select("valor_total, abastecido_em, finance_transaction_id, vehicle_id, km_atual")
     .single();
   if (error) throw error;
 
@@ -434,6 +448,9 @@ export async function updateFuelLog(
   } else {
     const transactionId = await createTransaction(userId, transactionInput);
     await supabase.from("vehicle_fuel_logs").update({ finance_transaction_id: transactionId }).eq("id", logId);
+  }
+  if (fields.km_atual != null) {
+    await syncVehicleKmAtual(data.vehicle_id as string, data.km_atual as number);
   }
 }
 
@@ -633,6 +650,134 @@ export async function deleteMaintenanceLog(logId: string) {
   if (existing?.finance_transaction_id) {
     await deleteTransaction(existing.finance_transaction_id);
   }
+}
+
+// ============================================================
+// Manutenção agendada — diferente de `VehicleMaintenanceLog` (sempre passado, já feita),
+// isso é a próxima manutenção PREVISTA, por data e/ou por km. Por km compara direto com
+// `vehicle.km_atual` (o mesmo campo manual usado no resto do módulo) — não existe no app
+// nenhuma leitura confiável de "km de hoje" pra fazer melhor que isso (ver `distributeOdometerLogs`,
+// que só interpola entre leituras já registradas, nunca projeta pra frente).
+// ============================================================
+
+export const MAINTENANCE_SCHEDULE_REMINDER_OPTIONS = [
+  { label: "Sem lembrete", value: null },
+  { label: "No dia (9h)", value: 0 },
+  { label: "1 dia antes", value: 1 },
+  { label: "3 dias antes", value: 3 },
+  { label: "1 semana antes", value: 7 },
+] as const;
+
+export type VehicleMaintenanceSchedule = {
+  id: string;
+  vehicle_id: string;
+  tipo: MaintenanceType;
+  descricao: string | null;
+  due_date: string | null; // "YYYY-MM-DD"
+  due_km: number | null;
+  reminder_days_before: number | null;
+  notification_id: string | null;
+  notes: string | null;
+  done: boolean;
+};
+
+/** Mais antigas (por data) primeiro, pendentes antes das já concluídas. */
+export async function fetchMaintenanceSchedules(vehicleId: string): Promise<VehicleMaintenanceSchedule[]> {
+  const { data, error } = await supabase
+    .from("vehicle_maintenance_schedules")
+    .select("*")
+    .eq("vehicle_id", vehicleId)
+    .order("done", { ascending: true })
+    .order("due_date", { ascending: true, nullsFirst: false });
+  if (error) throw error;
+  return (data ?? []) as VehicleMaintenanceSchedule[];
+}
+
+export type MaintenanceScheduleInput = {
+  tipo: MaintenanceType;
+  descricao: string | null;
+  /** Pelo menos um de `dueDate`/`dueKm` precisa vir preenchido (travado por check no banco). */
+  dueDate: string | null;
+  dueKm: number | null;
+  /** Só faz sentido junto de `dueDate` — não dá pra agendar notificação em cima de "quando
+   * bater tal km", só existe gatilho de data/hora. */
+  reminderDaysBefore: number | null;
+  notes: string;
+};
+
+async function scheduleMaintenanceReminder(input: MaintenanceScheduleInput): Promise<string | null> {
+  if (!input.dueDate || input.reminderDaysBefore === null) return null;
+  const [y, m, d] = input.dueDate.split("-").map(Number);
+  const reminderDate = new Date(y, m - 1, d, 9, 0, 0);
+  reminderDate.setDate(reminderDate.getDate() - input.reminderDaysBefore);
+  const body = input.notes ? input.notes : "Manutenção prevista chegando — dá uma olhada.";
+  return scheduleOneTimeReminder(reminderDate, `Manutenção: ${MAINTENANCE_TRANSACTION_LABEL[input.tipo]}`, body);
+}
+
+export async function createMaintenanceSchedule(userId: string, vehicleId: string, input: MaintenanceScheduleInput) {
+  const { data, error } = await supabase
+    .from("vehicle_maintenance_schedules")
+    .insert({
+      user_id: userId,
+      vehicle_id: vehicleId,
+      tipo: input.tipo,
+      descricao: input.descricao,
+      due_date: input.dueDate,
+      due_km: input.dueKm,
+      reminder_days_before: input.reminderDaysBefore,
+      notes: input.notes || null,
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+
+  const notificationId = await scheduleMaintenanceReminder(input);
+  if (notificationId) {
+    await supabase
+      .from("vehicle_maintenance_schedules")
+      .update({ notification_id: notificationId })
+      .eq("id", data.id);
+  }
+}
+
+export async function updateMaintenanceSchedule(
+  schedule: VehicleMaintenanceSchedule,
+  input: MaintenanceScheduleInput
+) {
+  await cancelReminder(schedule.notification_id);
+  const notificationId = await scheduleMaintenanceReminder(input);
+
+  const { error } = await supabase
+    .from("vehicle_maintenance_schedules")
+    .update({
+      tipo: input.tipo,
+      descricao: input.descricao,
+      due_date: input.dueDate,
+      due_km: input.dueKm,
+      reminder_days_before: input.reminderDaysBefore,
+      notification_id: notificationId,
+      notes: input.notes || null,
+    })
+    .eq("id", schedule.id);
+  if (error) throw error;
+}
+
+/** Marca como feita (ou volta a marcar como pendente) sem apagar — se a manutenção
+ * realmente aconteceu, o certo é também lançar em "Manutenção" (histórico); isso aqui só
+ * encerra o lembrete. */
+export async function toggleMaintenanceScheduleDone(schedule: VehicleMaintenanceSchedule, done: boolean) {
+  if (done) await cancelReminder(schedule.notification_id);
+  const { error } = await supabase
+    .from("vehicle_maintenance_schedules")
+    .update({ done, notification_id: done ? null : schedule.notification_id })
+    .eq("id", schedule.id);
+  if (error) throw error;
+}
+
+export async function deleteMaintenanceSchedule(schedule: VehicleMaintenanceSchedule) {
+  await cancelReminder(schedule.notification_id);
+  const { error } = await supabase.from("vehicle_maintenance_schedules").delete().eq("id", schedule.id);
+  if (error) throw error;
 }
 
 /** Soma o `valor` de lançamentos com data "YYYY-MM-DD" dentro de um período — usado pra

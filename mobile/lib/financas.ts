@@ -17,6 +17,7 @@ export type Transaction = {
   amount: number;
   description: string | null;
   occurred_at: string; // YYYY-MM-DD
+  occurred_time: string | null; // "HH:MM", opcional — nem todo lançamento tem hora registrada
   account_id: string | null;
   card_id: string | null;
   transfer_to_account_id: string | null;
@@ -78,8 +79,45 @@ export type CreditCardPayment = {
   cycle_start: string;
   cycle_end: string;
   amount: number;
+  /** Total calculado do ciclo no momento do pagamento — guardado à parte do `amount`
+   * (o que foi realmente pago) pra dar pra mostrar divergência, já que agora o valor
+   * pago na fatura pode ser ajustado em vez de sempre ser o total calculado. */
+  expected_amount: number | null;
   paid_from_account_id: string | null;
   paid_at: string;
+};
+
+/** Lançamento fixo (assinatura, mensalidade) num cartão — gerado sozinho em cada fatura
+ * aberta, ver `ensureCardRecurringChargesGenerated`. */
+export type CreditCardRecurringCharge = {
+  id: string;
+  card_id: string;
+  name: string;
+  amount: number;
+  category: string;
+  day_of_month: number;
+  active: boolean;
+};
+
+/** Lançamento fixo genérico fora do cartão (débito automático de conta, ou receita
+ * recorrente fora da renda fixa) — gerado sozinho todo mês, ver
+ * `ensureRecurringTransactionsGenerated`. Mesma ideia de `CreditCardRecurringCharge`, mas
+ * sem conceito de ciclo de fatura: a checagem de "já gerou este mês?" é por mês
+ * calendário (ver `dueRecurringTransactions`). */
+export type RecurringTransaction = {
+  id: string;
+  kind: TransactionKind;
+  account_id: string | null;
+  name: string;
+  amount: number;
+  category: string;
+  day_of_month: number;
+  active: boolean;
+  /** Parcelas restantes (ex: financiamento em 24x) — `null` quando é recorrência sem fim
+   * definido (assinatura, aluguel), igual antes desse campo existir. Quando preenchido,
+   * decrementa a cada ocorrência gerada e desativa sozinho ao chegar em 0 (ver
+   * `ensureRecurringTransactionsGenerated`). */
+  installments_remaining: number | null;
 };
 
 export type FinancialTag = {
@@ -93,6 +131,9 @@ export type BudgetCategory = {
   month: string; // YYYY-MM-01
   category: string;
   planned_amount: number;
+  /** Categoria em modo envelope — o que sobra (ou falta) fica reservado e passa pro mês
+   * seguinte em vez de resetar. Ver `computeEnvelopeBalances`. */
+  is_envelope: boolean;
 };
 
 export type FinancialGoal = {
@@ -124,6 +165,16 @@ export type BalanceRow = {
   card_id: string | null;
   transfer_to_account_id: string | null;
   occurred_at: string;
+  /** Preenchidos só nos lançamentos gerados automaticamente por um lançamento fixo de
+   * cartão — usados só pra checar se aquele ciclo já foi gerado (ver
+   * `dueRecurringChargeCycles`), não aparecem em nenhuma tela. */
+  recurring_charge_id: string | null;
+  recurring_cycle_end: string | null;
+  /** Mesma ideia de `recurring_charge_id`/`recurring_cycle_end`, mas pro lançamento fixo
+   * genérico fora do cartão (ver `dueRecurringTransactions`). `recurring_period` é sempre o
+   * dia 1 do mês em que a ocorrência foi gerada. */
+  recurring_transaction_id: string | null;
+  recurring_period: string | null;
 };
 
 export const CATEGORY_PRESETS = [
@@ -285,7 +336,7 @@ export async function fetchFinancas() {
     supabase
       .from("transactions")
       .select(
-        "id, kind, category, amount, description, occurred_at, account_id, card_id, transfer_to_account_id, transaction_tags(tag_id)"
+        "id, kind, category, amount, description, occurred_at, occurred_time, account_id, card_id, transfer_to_account_id, transaction_tags(tag_id)"
       )
       .order("occurred_at", { ascending: false })
       .limit(TRANSACTION_HISTORY_LIMIT),
@@ -310,6 +361,7 @@ export async function fetchFinancas() {
     amount: row.amount,
     description: row.description,
     occurred_at: row.occurred_at,
+    occurred_time: row.occurred_time,
     account_id: row.account_id,
     card_id: row.card_id,
     transfer_to_account_id: row.transfer_to_account_id,
@@ -330,7 +382,16 @@ export async function fetchFinancas() {
  * sempre). Buscado à parte de `fetchFinancas` pra não pesar a busca principal.
  */
 export async function fetchFinancasExtras() {
-  const [accountsRes, cardsRes, paymentsRes, tagsRes, goalsRes, balanceRowsRes] = await Promise.all([
+  const [
+    accountsRes,
+    cardsRes,
+    paymentsRes,
+    tagsRes,
+    goalsRes,
+    balanceRowsRes,
+    recurringChargesRes,
+    recurringTransactionsRes,
+  ] = await Promise.all([
     supabase
       .from("financial_accounts")
       .select("id, name, kind, initial_balance, color_key, archived, position")
@@ -341,7 +402,7 @@ export async function fetchFinancasExtras() {
       .order("created_at", { ascending: true }),
     supabase
       .from("credit_card_payments")
-      .select("id, card_id, cycle_start, cycle_end, amount, paid_from_account_id, paid_at")
+      .select("id, card_id, cycle_start, cycle_end, amount, expected_amount, paid_from_account_id, paid_at")
       .order("cycle_end", { ascending: false }),
     supabase.from("financial_tags").select("id, name, color_key").order("name", { ascending: true }),
     supabase
@@ -350,7 +411,17 @@ export async function fetchFinancasExtras() {
       .order("created_at", { ascending: true }),
     supabase
       .from("transactions")
-      .select("id, kind, amount, category, description, account_id, card_id, transfer_to_account_id, occurred_at"),
+      .select(
+        "id, kind, amount, category, description, account_id, card_id, transfer_to_account_id, occurred_at, recurring_charge_id, recurring_cycle_end, recurring_transaction_id, recurring_period"
+      ),
+    supabase
+      .from("credit_card_recurring_charges")
+      .select("id, card_id, name, amount, category, day_of_month, active")
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("recurring_transactions")
+      .select("id, kind, account_id, name, amount, category, day_of_month, active, installments_remaining")
+      .order("created_at", { ascending: true }),
   ]);
 
   if (accountsRes.error) throw accountsRes.error;
@@ -359,6 +430,8 @@ export async function fetchFinancasExtras() {
   if (tagsRes.error) throw tagsRes.error;
   if (goalsRes.error) throw goalsRes.error;
   if (balanceRowsRes.error) throw balanceRowsRes.error;
+  if (recurringChargesRes.error) throw recurringChargesRes.error;
+  if (recurringTransactionsRes.error) throw recurringTransactionsRes.error;
 
   return {
     accounts: (accountsRes.data ?? []) as FinancialAccount[],
@@ -367,6 +440,8 @@ export async function fetchFinancasExtras() {
     tags: (tagsRes.data ?? []) as FinancialTag[],
     goals: (goalsRes.data ?? []) as FinancialGoal[],
     balanceRows: (balanceRowsRes.data ?? []) as BalanceRow[],
+    recurringCharges: (recurringChargesRes.data ?? []) as CreditCardRecurringCharge[],
+    recurringTransactions: (recurringTransactionsRes.data ?? []) as RecurringTransaction[],
   };
 }
 
@@ -501,6 +576,21 @@ export type TransactionInput = {
    * pela integração com Veículo/Copiloto pra o lançamento em Finanças
    * carregar a data real da corrida/abastecimento/manutenção, não a data em que foi salvo. */
   occurredAt?: string;
+  /** "HH:MM" — hora do gasto/receita, opcional (nem todo lançamento precisa disso).
+   * `undefined` não mexe no valor já salvo (edição); `null` limpa a hora registrada. */
+  occurredTime?: string | null;
+  /** Preenchidos só quando o lançamento vem de um lançamento fixo (assinatura) do cartão
+   * gerado automaticamente — liga essa transação ao lançamento fixo e ao ciclo (fatura) em
+   * que ela foi gerada, pra não gerar a mesma ocorrência duas vezes no mesmo ciclo (ver
+   * `dueRecurringChargeCycles`/`ensureCardRecurringChargesGenerated`). */
+  recurringChargeId?: string | null;
+  recurringCycleEnd?: string | null;
+  /** Preenchidos só quando o lançamento vem de um lançamento fixo genérico (fora do
+   * cartão) gerado automaticamente — liga essa transação ao lançamento fixo e ao mês em
+   * que ela foi gerada, pra não gerar a mesma ocorrência duas vezes no mesmo mês (ver
+   * `dueRecurringTransactions`/`ensureRecurringTransactionsGenerated`). */
+  recurringTransactionId?: string | null;
+  recurringPeriod?: string | null;
 };
 
 async function syncTransactionTags(transactionId: string, tagIds: string[] | undefined) {
@@ -531,9 +621,14 @@ export async function createTransaction(userId: string, input: TransactionInput)
       amount: input.amount,
       description: input.description || null,
       occurred_at: input.occurredAt ?? toDateString(new Date()),
+      occurred_time: input.occurredTime ?? null,
       account_id: input.accountId ?? null,
       card_id: input.cardId ?? null,
       transfer_to_account_id: input.transferToAccountId ?? null,
+      recurring_charge_id: input.recurringChargeId ?? null,
+      recurring_cycle_end: input.recurringCycleEnd ?? null,
+      recurring_transaction_id: input.recurringTransactionId ?? null,
+      recurring_period: input.recurringPeriod ?? null,
     })
     .select("id")
     .single();
@@ -566,9 +661,10 @@ export async function updateTransaction(id: string, input: TransactionInput) {
       account_id: input.accountId ?? null,
       card_id: input.cardId ?? null,
       transfer_to_account_id: input.transferToAccountId ?? null,
-      // Nunca reseta a data se `occurredAt` não for passado — mesmo comportamento de
-      // antes desta integração (edição normal em Finanças não mexe na data).
+      // Nunca reseta a data/hora se não forem passadas — mesmo comportamento de antes
+      // desta integração (edição normal em Finanças não mexia na data).
       ...(input.occurredAt ? { occurred_at: input.occurredAt } : {}),
+      ...(input.occurredTime !== undefined ? { occurred_time: input.occurredTime } : {}),
     })
     .eq("id", id);
   if (error) throw error;
@@ -712,6 +808,62 @@ export function formatShortDate(isoDate: string) {
 export function formatHistoryDate(isoDate: string) {
   const [year, month, day] = isoDate.split("-");
   return `${day}/${month}/${year.slice(2)}`;
+}
+
+/** Rótulo do cabeçalho de grupo do histórico (lançamentos separados por dia): "Hoje",
+ * "Ontem", o nome do dia da semana pra até uma semana atrás, ou "DD de mês" antes disso. */
+export function formatHistoryGroupLabel(isoDate: string) {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  const now = new Date();
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const diffDays = Math.round((today0 - date.getTime()) / 86400000);
+  if (diffDays === 0) return "Hoje";
+  if (diffDays === 1) return "Ontem";
+  if (diffDays > 1 && diffDays < 7) {
+    const weekday = date.toLocaleDateString("pt-BR", { weekday: "long" });
+    return weekday.charAt(0).toUpperCase() + weekday.slice(1);
+  }
+  const label = date.toLocaleDateString("pt-BR", { day: "2-digit", month: "long" });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/** Máscara "HH:MM" pra digitação num teclado numérico — recebe qualquer texto (já com ou
+ * sem ":"), fica só com os dígitos e reinsere o ":" sozinho depois do 2º dígito. */
+export function maskTimeInput(text: string): string {
+  const digits = text.replace(/\D/g, "").slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+/** Máscara "DD/MM/AAAA" pra digitação num teclado numérico, mesmo princípio do `maskTimeInput`. */
+export function maskDateInput(text: string): string {
+  const digits = text.replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
+/** Converte "DD/MM/AAAA" (já mascarado) pra "YYYY-MM-DD" — devolve `null` se a data não
+ * estiver completa ou não for uma data real (ex: 31/02). */
+export function parseMaskedDate(masked: string): string | null {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(masked);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return toDateString(date);
+}
+
+/** Valida "HH:MM" (já mascarado) — devolve `true` só se estiver completo e for um horário real. */
+export function isValidMaskedTime(masked: string): boolean {
+  const match = /^(\d{2}):(\d{2})$/.exec(masked);
+  if (!match) return false;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
 }
 
 // ============================================================
@@ -884,17 +1036,44 @@ export async function updateTransactionAccount(
 
 export async function createCard(
   userId: string,
-  input: { name: string; cardLimit: number | null; closingDay: number; dueDay: number; colorKey: CategoryColorKey }
+  input: {
+    name: string;
+    cardLimit: number | null;
+    closingDay: number;
+    dueDay: number;
+    colorKey: CategoryColorKey;
+    /** Fatura já em aberto ao cadastrar o cartão (ex: cartão que já vinha sendo usado antes
+     * do Prumo) — vira um lançamento de verdade na fatura atual, editável/excluível igual
+     * qualquer outro (mesmo princípio de "nada fabricado" do resto do app). */
+    currentInvoiceAmount?: number | null;
+  }
 ) {
-  const { error } = await supabase.from("credit_cards").insert({
-    user_id: userId,
-    name: input.name,
-    card_limit: input.cardLimit,
-    closing_day: input.closingDay,
-    due_day: input.dueDay,
-    color_key: input.colorKey,
-  });
+  const { data, error } = await supabase
+    .from("credit_cards")
+    .insert({
+      user_id: userId,
+      name: input.name,
+      card_limit: input.cardLimit,
+      closing_day: input.closingDay,
+      due_day: input.dueDay,
+      color_key: input.colorKey,
+    })
+    .select("id")
+    .single();
   if (error) throw error;
+
+  if (input.currentInvoiceAmount) {
+    await createTransaction(userId, {
+      kind: "expense",
+      category: "Outros",
+      amount: input.currentInvoiceAmount,
+      description: "Saldo inicial da fatura",
+      cardId: data.id,
+      occurredAt: toDateString(new Date()),
+    });
+  }
+
+  return data.id as string;
 }
 
 export async function updateCard(
@@ -987,10 +1166,20 @@ export function closedUnpaidCycles(
 }
 
 /** Paga uma fatura: registra o pagamento (trava contra pagar de novo, via unique
- * (card_id, cycle_end)) e lança a despesa correspondente na conta escolhida. */
+ * (card_id, cycle_end)) e lança a despesa correspondente na conta escolhida.
+ * `expectedAmount` é o total calculado do ciclo (soma dos lançamentos) — guardado à parte
+ * de `amount` (o que foi realmente pago, que pode divergir por anuidade ainda não lançada,
+ * cobrança contestada, etc.) pra dar pra mostrar a diferença depois. */
 export async function payCardCycle(
   userId: string,
-  input: { cardId: string; cycleStart: string; cycleEnd: string; amount: number; paidFromAccountId: string }
+  input: {
+    cardId: string;
+    cycleStart: string;
+    cycleEnd: string;
+    amount: number;
+    expectedAmount: number;
+    paidFromAccountId: string;
+  }
 ) {
   const { error: paymentError } = await supabase.from("credit_card_payments").insert({
     user_id: userId,
@@ -998,6 +1187,7 @@ export async function payCardCycle(
     cycle_start: input.cycleStart,
     cycle_end: input.cycleEnd,
     amount: input.amount,
+    expected_amount: input.expectedAmount,
     paid_from_account_id: input.paidFromAccountId,
   });
   if (paymentError) throw paymentError;
@@ -1009,6 +1199,283 @@ export async function payCardCycle(
     description: "Pagamento de fatura",
     accountId: input.paidFromAccountId,
   });
+}
+
+// ============================================================
+// Lançamentos fixos (assinaturas) no cartão de crédito
+// ============================================================
+
+export async function createRecurringCharge(
+  userId: string,
+  input: { cardId: string; name: string; amount: number; category: string; dayOfMonth: number }
+) {
+  const { error } = await supabase.from("credit_card_recurring_charges").insert({
+    user_id: userId,
+    card_id: input.cardId,
+    name: input.name,
+    amount: input.amount,
+    category: input.category,
+    day_of_month: input.dayOfMonth,
+  });
+  if (error) throw error;
+}
+
+export async function updateRecurringCharge(
+  id: string,
+  input: { name: string; amount: number; category: string; dayOfMonth: number }
+) {
+  const { error } = await supabase
+    .from("credit_card_recurring_charges")
+    .update({
+      name: input.name,
+      amount: input.amount,
+      category: input.category,
+      day_of_month: input.dayOfMonth,
+    })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+/** Desativa (ou reativa) um lançamento fixo sem apagar o histórico de ocorrências já
+ * geradas — mesmo padrão de `setCardArchived`. Desativado não gera mais ocorrência nova
+ * em nenhum ciclo futuro, mas os lançamentos passados continuam intactos. */
+export async function setRecurringChargeActive(id: string, active: boolean) {
+  const { error } = await supabase.from("credit_card_recurring_charges").update({ active }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteRecurringCharge(id: string) {
+  const { error } = await supabase.from("credit_card_recurring_charges").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/**
+ * Ancora o dia configurado (`dayOfMonth`, 1–28) no mês do FECHAMENTO do ciclo (`cycle.end`),
+ * já que é isso que decide em qual fatura a cobrança cai na prática (uma assinatura cobrada
+ * no dia 5, por exemplo, cai na fatura que fecha nesse mês). Depois trava o resultado dentro
+ * de `[cycle.start, cycle.end]` — sem isso, ancorar sempre no mês do `cycle.end` poderia
+ * jogar a data pra fora do próprio ciclo quando o ciclo cruza a virada do mês.
+ */
+export function recurringChargeOccurredAt(dayOfMonth: number, cycle: { start: string; end: string }): string {
+  const [endYear, endMonth] = cycle.end.split("-").map(Number);
+  const daysInMonth = new Date(endYear, endMonth, 0).getDate();
+  const day = Math.min(dayOfMonth, daysInMonth);
+  const candidate = toDateString(new Date(endYear, endMonth - 1, day));
+  if (candidate < cycle.start) return cycle.start;
+  if (candidate > cycle.end) return cycle.end;
+  return candidate;
+}
+
+/**
+ * Lançamentos fixos ativos, de cartões ativos, que ainda não têm ocorrência gerada no ciclo
+ * aberto de cada cartão — checagem via `rows` (não via uma nova busca), casando
+ * `recurring_charge_id` + `recurring_cycle_end` já existentes no histórico. É a lista do que
+ * falta gerar; `ensureCardRecurringChargesGenerated` consome ela.
+ */
+export function dueRecurringChargeCycles(
+  cards: CreditCard[],
+  charges: CreditCardRecurringCharge[],
+  rows: BalanceRow[],
+  today = new Date()
+): { charge: CreditCardRecurringCharge; cycle: { start: string; end: string }; occurredAt: string }[] {
+  const activeCardIds = new Set(cards.filter((c) => !c.archived).map((c) => c.id));
+  const generated = new Set(
+    rows
+      .filter((r) => r.recurring_charge_id && r.recurring_cycle_end)
+      .map((r) => `${r.recurring_charge_id}:${r.recurring_cycle_end}`)
+  );
+
+  const due: { charge: CreditCardRecurringCharge; cycle: { start: string; end: string }; occurredAt: string }[] = [];
+  for (const charge of charges) {
+    if (!charge.active || !activeCardIds.has(charge.card_id)) continue;
+    const card = cards.find((c) => c.id === charge.card_id);
+    if (!card) continue;
+    const cycle = currentCardCycle(card.closing_day, today);
+    if (generated.has(`${charge.id}:${cycle.end}`)) continue;
+    due.push({ charge, cycle, occurredAt: recurringChargeOccurredAt(charge.day_of_month, cycle) });
+  }
+  return due;
+}
+
+/**
+ * Gera de fato os lançamentos pendentes (ver `dueRecurringChargeCycles`) — chamado ao abrir
+ * a tela de Finanças/Cartão, pra cada assinatura cair sozinha na fatura do ciclo aberto sem
+ * precisar redigitar todo mês. Retorna quantos foram gerados (0 é o caso comum, quando já
+ * está tudo em dia).
+ */
+export async function ensureCardRecurringChargesGenerated(
+  userId: string,
+  cards: CreditCard[],
+  charges: CreditCardRecurringCharge[],
+  rows: BalanceRow[],
+  today = new Date()
+): Promise<number> {
+  const due = dueRecurringChargeCycles(cards, charges, rows, today);
+  for (const item of due) {
+    await createTransaction(userId, {
+      kind: "expense",
+      category: item.charge.category,
+      amount: item.charge.amount,
+      description: item.charge.name,
+      cardId: item.charge.card_id,
+      occurredAt: item.occurredAt,
+      recurringChargeId: item.charge.id,
+      recurringCycleEnd: item.cycle.end,
+    });
+  }
+  return due.length;
+}
+
+// ============================================================
+// Lançamentos fixos genéricos fora do cartão (débito de conta / receita recorrente)
+// ============================================================
+
+export async function createRecurringTransaction(
+  userId: string,
+  input: {
+    kind: TransactionKind;
+    accountId: string | null;
+    name: string;
+    amount: number;
+    category: string;
+    dayOfMonth: number;
+    /** Parcelas restantes — `null`/omitido pra recorrência sem fim definido (assinatura,
+     * aluguel), um número pra financiamento/parcelamento que tem fim (ver
+     * `RecurringTransaction.installments_remaining`). */
+    installmentsRemaining?: number | null;
+  }
+) {
+  const { error } = await supabase.from("recurring_transactions").insert({
+    user_id: userId,
+    kind: input.kind,
+    account_id: input.accountId,
+    name: input.name,
+    amount: input.amount,
+    category: input.category,
+    day_of_month: input.dayOfMonth,
+    installments_remaining: input.installmentsRemaining ?? null,
+  });
+  if (error) throw error;
+}
+
+/** `kind`/`accountId` não entram aqui — mudar o tipo (despesa/receita) ou a conta de um
+ * lançamento fixo já gerado bagunçaria o histórico de ocorrências passadas; pra isso a
+ * pessoa desativa e cria outro (mesmo comportamento de `updateRecurringCharge`, que também
+ * não deixa trocar o cartão). `installmentsRemaining` já entra editável, diferente dos
+ * outros — serve pra corrigir uma conta que já vinha sendo paga fora do app, ou ajustar
+ * depois de uma renegociação. */
+export async function updateRecurringTransaction(
+  id: string,
+  input: { name: string; amount: number; category: string; dayOfMonth: number; installmentsRemaining: number | null }
+) {
+  const { error } = await supabase
+    .from("recurring_transactions")
+    .update({
+      name: input.name,
+      amount: input.amount,
+      category: input.category,
+      day_of_month: input.dayOfMonth,
+      installments_remaining: input.installmentsRemaining,
+    })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+/** Desativa (ou reativa) sem apagar o histórico de ocorrências já geradas — mesmo padrão
+ * de `setRecurringChargeActive`. */
+export async function setRecurringTransactionActive(id: string, active: boolean) {
+  const { error } = await supabase.from("recurring_transactions").update({ active }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteRecurringTransaction(id: string) {
+  const { error } = await supabase.from("recurring_transactions").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/** Ancora o dia configurado (`dayOfMonth`, 1–28) no mês de referência — mais simples que
+ * `recurringChargeOccurredAt` porque não existe ciclo de fatura pra travar contra aqui,
+ * só o próprio mês (contas não têm fechamento). */
+export function recurringTransactionOccurredAt(dayOfMonth: number, monthRef: Date): string {
+  const y = monthRef.getFullYear();
+  const m = monthRef.getMonth();
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const day = Math.min(dayOfMonth, daysInMonth);
+  return toDateString(new Date(y, m, day));
+}
+
+/**
+ * Lançamentos fixos ativos que ainda não têm ocorrência gerada no mês atual — checagem via
+ * `rows` (não via uma nova busca), casando `recurring_transaction_id` + `recurring_period`
+ * já existentes no histórico. `period` é sempre o dia 1 do mês corrente (mesma convenção de
+ * `budget_categories.month`). É a lista do que falta gerar;
+ * `ensureRecurringTransactionsGenerated` consome ela.
+ */
+export function dueRecurringTransactions(
+  items: RecurringTransaction[],
+  rows: BalanceRow[],
+  today = new Date()
+): { item: RecurringTransaction; period: string; occurredAt: string }[] {
+  const period = toDateString(new Date(today.getFullYear(), today.getMonth(), 1));
+  const generated = new Set(
+    rows
+      .filter((r) => r.recurring_transaction_id && r.recurring_period)
+      .map((r) => `${r.recurring_transaction_id}:${r.recurring_period}`)
+  );
+
+  const due: { item: RecurringTransaction; period: string; occurredAt: string }[] = [];
+  for (const item of items) {
+    if (!item.active) continue;
+    // Defensivo: `installments_remaining` chegando a 0 já desativa sozinho (ver
+    // `ensureRecurringTransactionsGenerated`), mas se alguém editar o valor direto pra 0
+    // sem isso passar por lá, essa checagem evita gerar uma parcela a mais.
+    if (item.installments_remaining !== null && item.installments_remaining <= 0) continue;
+    if (generated.has(`${item.id}:${period}`)) continue;
+    due.push({ item, period, occurredAt: recurringTransactionOccurredAt(item.day_of_month, today) });
+  }
+  return due;
+}
+
+/**
+ * Gera de fato os lançamentos pendentes (ver `dueRecurringTransactions`) — chamado ao abrir
+ * a tela de Finanças, pra cada débito automático/receita recorrente cair sozinho no mês sem
+ * precisar redigitar todo mês. Retorna quantos foram gerados (0 é o caso comum, quando já
+ * está tudo em dia).
+ *
+ * Quando o item tem `installments_remaining` definido (financiamento/parcelamento com fim),
+ * cada ocorrência gerada decrementa esse contador; ao chegar em 0, desativa sozinho (mesmo
+ * padrão de `active` usado pra pausar manualmente) — a última parcela ainda é gerada
+ * normalmente, só não gera mais nenhuma depois dela.
+ */
+export async function ensureRecurringTransactionsGenerated(
+  userId: string,
+  items: RecurringTransaction[],
+  rows: BalanceRow[],
+  today = new Date()
+): Promise<number> {
+  const due = dueRecurringTransactions(items, rows, today);
+  for (const due_item of due) {
+    await createTransaction(userId, {
+      kind: due_item.item.kind,
+      category: due_item.item.category,
+      amount: due_item.item.amount,
+      description: due_item.item.name,
+      accountId: due_item.item.account_id,
+      occurredAt: due_item.occurredAt,
+      recurringTransactionId: due_item.item.id,
+      recurringPeriod: due_item.period,
+    });
+
+    if (due_item.item.installments_remaining !== null) {
+      const remaining = due_item.item.installments_remaining - 1;
+      const { error } = await supabase
+        .from("recurring_transactions")
+        .update({ installments_remaining: remaining, active: remaining > 0 })
+        .eq("id", due_item.item.id);
+      if (error) throw error;
+    }
+  }
+  return due.length;
 }
 
 // ============================================================
@@ -1048,7 +1515,7 @@ export function monthKey(reference = new Date()) {
 export async function fetchBudgetForMonth(month: string) {
   const { data, error } = await supabase
     .from("budget_categories")
-    .select("id, month, category, planned_amount")
+    .select("id, month, category, planned_amount, is_envelope")
     .eq("month", month);
   if (error) throw error;
   return (data ?? []) as BudgetCategory[];
@@ -1056,14 +1523,18 @@ export async function fetchBudgetForMonth(month: string) {
 
 export async function setBudgetCategory(
   userId: string,
-  input: { month: string; category: string; plannedAmount: number }
+  input: { month: string; category: string; plannedAmount: number; isEnvelope: boolean }
 ) {
-  const { error } = await supabase
-    .from("budget_categories")
-    .upsert(
-      { user_id: userId, month: input.month, category: input.category, planned_amount: input.plannedAmount },
-      { onConflict: "user_id,month,category" }
-    );
+  const { error } = await supabase.from("budget_categories").upsert(
+    {
+      user_id: userId,
+      month: input.month,
+      category: input.category,
+      planned_amount: input.plannedAmount,
+      is_envelope: input.isEnvelope,
+    },
+    { onConflict: "user_id,month,category" }
+  );
   if (error) throw error;
 }
 
@@ -1089,10 +1560,81 @@ export async function copyBudgetFromPreviousMonth(userId: string, currentMonth: 
     month: currentMonth,
     category: b.category,
     planned_amount: b.planned_amount,
+    is_envelope: b.is_envelope,
   }));
   const { error } = await supabase.from("budget_categories").upsert(rows, { onConflict: "user_id,month,category" });
   if (error) throw error;
   return rows.length;
+}
+
+/** Todas as linhas (todos os meses já orçados) das categorias dadas — usado só pra
+ * calcular o saldo acumulado de categorias em modo envelope (`computeEnvelopeBalances`),
+ * que precisa do histórico completo, não só do mês em exibição. */
+export async function fetchBudgetHistoryForCategories(categories: string[]): Promise<BudgetCategory[]> {
+  if (categories.length === 0) return [];
+  const { data, error } = await supabase
+    .from("budget_categories")
+    .select("id, month, category, planned_amount, is_envelope")
+    .in("category", categories)
+    .order("month", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as BudgetCategory[];
+}
+
+export type EnvelopeExpense = { category: string; occurred_at: string; amount: number };
+
+/** Despesas das categorias-envelope desde o primeiro mês orçado — busca à parte da
+ * `fetchFinancas` porque essa tem um limite de histórico (`TRANSACTION_HISTORY_LIMIT`)
+ * que pode não cobrir todo o período do envelope. */
+export async function fetchExpensesForCategoriesSince(
+  categories: string[],
+  sinceDate: string
+): Promise<EnvelopeExpense[]> {
+  if (categories.length === 0) return [];
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("category, occurred_at, amount")
+    .eq("kind", "expense")
+    .in("category", categories)
+    .gte("occurred_at", sinceDate);
+  if (error) throw error;
+  return (data ?? []) as EnvelopeExpense[];
+}
+
+/**
+ * Saldo acumulado de cada categoria em modo envelope, até e incluindo `uptoMonth`:
+ * soma, mês a mês desde o primeiro mês orçado, de (planejado − gasto naquele mês). Sobra
+ * vira saldo positivo que acumula pro mês seguinte; estouro vira saldo negativo que
+ * "puxa" o próximo mês pra baixo — bem diferente do planejamento comum, que reseta o
+ * previsto x realizado a cada mês sem carregar nada.
+ */
+export function computeEnvelopeBalances(
+  history: BudgetCategory[],
+  expenses: EnvelopeExpense[],
+  uptoMonth: string
+): Map<string, number> {
+  const byCategory = new Map<string, BudgetCategory[]>();
+  for (const row of history) {
+    if (!row.is_envelope || row.month > uptoMonth) continue;
+    const list = byCategory.get(row.category) ?? [];
+    list.push(row);
+    byCategory.set(row.category, list);
+  }
+
+  const balances = new Map<string, number>();
+  for (const [category, rows] of byCategory) {
+    let balance = 0;
+    for (const row of rows) {
+      const [year, monthNum] = row.month.split("-").map(Number);
+      const monthEnd = toDateString(new Date(year, monthNum, 0));
+      const spent = expenses
+        .filter((e) => e.category === category && e.occurred_at >= row.month && e.occurred_at <= monthEnd)
+        .reduce((sum, e) => sum + Number(e.amount), 0);
+      balance += Number(row.planned_amount) - spent;
+    }
+    balances.set(category, balance);
+  }
+  return balances;
 }
 
 /** Planejado x realizado por categoria, considerando só as transações do mês em questão. */

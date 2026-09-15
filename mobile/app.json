@@ -33,6 +33,7 @@
       "expo-router",
       "expo-font",
       "expo-notifications",
+      "expo-quick-actions",
       [
         "expo-local-authentication",
         {
@@ -61,6 +62,31 @@
         {
           "androidAppId": "ca-app-pub-3940256099942544~3347511713",
           "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ],
+      [
+        "react-native-android-widget",
+        {
+          "fonts": [
+            "./node_modules/@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf",
+            "./node_modules/@expo-google-fonts/ibm-plex-sans/500Medium/IBMPlexSans_500Medium.ttf",
+            "./node_modules/@expo-google-fonts/ibm-plex-sans/600SemiBold/IBMPlexSans_600SemiBold.ttf",
+            "./node_modules/@expo-google-fonts/archivo/700Bold/Archivo_700Bold.ttf"
+          ],
+          "widgets": [
+            {
+              "name": "HojeWidget",
+              "label": "Prumo — Hoje",
+              "description": "O que vence ou está programado pra hoje, direto na tela inicial.",
+              "minWidth": "180dp",
+              "minHeight": "110dp",
+              "targetCellWidth": 3,
+              "targetCellHeight": 2,
+              "resizeMode": "vertical",
+              "previewImage": "./assets/widget-preview/hoje.png",
+              "updatePeriodMillis": 1800000
+            }
+          ]
         }
       ],
       "./plugins/withCopilotoAccessibility"

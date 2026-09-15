@@ -5,6 +5,8 @@ import { fontFamily } from "@/lib/theme/tokens";
 import {
   WEEKDAY_LABELS,
   computeStreak,
+  computeHabitStrength,
+  habitStrengthLabel,
   streakMilestone,
   lastSevenDays,
   toDateString,
@@ -15,6 +17,10 @@ import {
 type HabitRowProps = {
   habit: Habit;
   logs: HabitLog[];
+  /** Início real da janela de logs buscada (ver `fetchHabitsWithLogs`) — usado pra `computeStreak`
+   * não subcontar uma streak mais longa que a janela, e pra `computeHabitStrength` nunca tratar
+   * um dia fora do que foi buscado como "faltou". */
+  logsSince: string;
   /** Forma de marcar hábito em dias que passaram sem
    * registrar. Antes só "hoje" podia ser tocado na fita de 7 dias; agora qualquer um dos
    * últimos 7 dias pode (nunca dias futuros — ver `looksActive`/`isFuture` abaixo). */
@@ -31,6 +37,7 @@ type HabitRowProps = {
 export function HabitRow({
   habit,
   logs,
+  logsSince,
   onToggleDate,
   onEdit,
   onDelete,
@@ -39,8 +46,11 @@ export function HabitRow({
   toggleError,
 }: HabitRowProps) {
   const { tokens } = useTheme();
-  const streak = computeStreak(logs, habit);
+  const streak = computeStreak(logs, habit, logsSince);
   const milestone = streakMilestone(streak);
+  const strength = computeHabitStrength(logs, habit, logsSince);
+  const strengthColor =
+    strength === null ? tokens.textMuted : strength >= 0.6 ? tokens.success : strength >= 0.3 ? tokens.warning : tokens.danger;
   const doneDates = new Set(
     logs.filter((l) => l.habit_id === habit.id && l.completed).map((l) => l.log_date)
   );
@@ -72,6 +82,31 @@ export function HabitRow({
             <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 11, color: tokens.success }}>
               🏅 Marco de {milestone} dias batido!
             </Text>
+          ) : null}
+          {strength !== null ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
+              <View
+                style={{
+                  width: 44,
+                  height: 5,
+                  borderRadius: 3,
+                  backgroundColor: tokens.surfaceAlt,
+                  overflow: "hidden",
+                }}
+              >
+                <View
+                  style={{
+                    width: `${Math.round(strength * 100)}%`,
+                    height: "100%",
+                    borderRadius: 3,
+                    backgroundColor: strengthColor,
+                  }}
+                />
+              </View>
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 11, color: tokens.textMuted }}>
+                Força: {Math.round(strength * 100)}% · {habitStrengthLabel(strength)}
+              </Text>
+            </View>
           ) : null}
         </View>
         <View style={{ flexDirection: "row", gap: 12 }}>

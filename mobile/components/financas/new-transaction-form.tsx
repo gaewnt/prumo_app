@@ -4,6 +4,10 @@ import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import {
   CATEGORY_PRESETS,
+  maskDateInput,
+  maskTimeInput,
+  parseMaskedDate,
+  isValidMaskedTime,
   type TransactionKind,
   type FinancialAccount,
   type CreditCard,
@@ -19,7 +23,27 @@ type TransactionInput = {
   accountId?: string | null;
   cardId?: string | null;
   tagIds?: string[];
+  /** "YYYY-MM-DD" — quando omitido, usa a data de hoje. */
+  occurredAt?: string;
+  /** "HH:MM", opcional. */
+  occurredTime?: string | null;
 };
+
+/** "YYYY-MM-DD" -> "DD/MM/AAAA", pra preencher o campo de data já mascarado. */
+function isoToMaskedDate(iso: string): string {
+  const [year, month, day] = iso.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+function nowMaskedDate(): string {
+  const d = new Date();
+  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+function nowMaskedTime(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 type NewTransactionFormProps = {
   /** Preenche o formulário com um lançamento existente — usado na edição. */
@@ -93,9 +117,17 @@ export function NewTransactionForm({
           : null
   );
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>(initial?.tagIds ?? []);
+  // Data/hora do gasto/receita — antes não existia esse campo, todo lançamento virava
+  // "agora" na hora de salvar. Hora fica opcional (nem todo mundo quer ser tão específico).
+  const [dateText, setDateText] = useState(initial?.occurredAt ? isoToMaskedDate(initial.occurredAt) : nowMaskedDate());
+  const [timeText, setTimeText] = useState(
+    initial?.occurredTime ? initial.occurredTime : initial ? "" : nowMaskedTime()
+  );
 
   const amount = Number(amountText.replace(",", "."));
-  const isValid = category.trim().length > 0 && amount > 0;
+  const occurredAt = parseMaskedDate(dateText);
+  const timeValid = timeText.trim().length === 0 || isValidMaskedTime(timeText);
+  const isValid = category.trim().length > 0 && amount > 0 && occurredAt !== null && timeValid;
 
   const descriptionMatches =
     descriptionFocused && description.trim().length >= 2
@@ -118,6 +150,7 @@ export function NewTransactionForm({
   }
 
   function handleSubmit() {
+    if (!occurredAt) return; // botão já fica desabilitado nesse caso — guarda extra
     onSubmit({
       kind,
       category,
@@ -126,6 +159,8 @@ export function NewTransactionForm({
       accountId: paymentMethod?.type === "account" ? paymentMethod.id : null,
       cardId: paymentMethod?.type === "card" ? paymentMethod.id : null,
       tagIds: selectedTagIds,
+      occurredAt,
+      occurredTime: timeText.trim().length > 0 ? timeText : null,
     });
   }
 
@@ -273,6 +308,52 @@ export function NewTransactionForm({
             </Pressable>
           </View>
         ) : null}
+      </View>
+
+      <View style={{ gap: 6 }}>
+        <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12, color: tokens.textMuted }}>
+          Quando
+        </Text>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <TextInput
+            value={dateText}
+            onChangeText={(text) => setDateText(maskDateInput(text))}
+            placeholder="DD/MM/AAAA"
+            placeholderTextColor={tokens.textMuted}
+            keyboardType="number-pad"
+            maxLength={10}
+            style={{
+              flex: 1.3,
+              minWidth: 0,
+              fontFamily: fontFamily.mono,
+              fontSize: 14,
+              color: occurredAt ? tokens.text : tokens.danger,
+              backgroundColor: tokens.surfaceAlt,
+              borderRadius: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 12,
+            }}
+          />
+          <TextInput
+            value={timeText}
+            onChangeText={(text) => setTimeText(maskTimeInput(text))}
+            placeholder="HH:MM (opcional)"
+            placeholderTextColor={tokens.textMuted}
+            keyboardType="number-pad"
+            maxLength={5}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontFamily: fontFamily.mono,
+              fontSize: 14,
+              color: timeValid ? tokens.text : tokens.danger,
+              backgroundColor: tokens.surfaceAlt,
+              borderRadius: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 12,
+            }}
+          />
+        </View>
       </View>
 
       <View style={{ gap: 6 }}>

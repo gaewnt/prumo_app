@@ -65,12 +65,17 @@ export async function fetchBiblioteca() {
   if (quotesRes.error) throw quotesRes.error;
 
   const metaLivros = Number(preferences.meta_livros as string | number | undefined);
+  // Meta diária de páginas — diferente de `metaLivros` (anual, definida no onboarding),
+  // essa é editável direto na tela (mesmo padrão de "renda fixa" em Finanças) e alimenta a
+  // Visão Hoje: com ela definida, "faltam X páginas hoje" aparece lá enquanto não bater a meta.
+  const metaPaginasDia = Number(preferences.meta_paginas_dia as string | number | undefined);
 
   return {
     books: (booksRes.data ?? []) as Book[],
     logs: (logsRes.data ?? []) as ReadingLog[],
     quotes: (quotesRes.data ?? []) as Quote[],
     metaLivros: metaLivros > 0 ? Math.round(metaLivros) : null,
+    metaPaginasDia: metaPaginasDia > 0 ? Math.round(metaPaginasDia) : null,
     weekStart,
   };
 }

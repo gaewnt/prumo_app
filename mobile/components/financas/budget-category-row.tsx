@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Text, TextInput, View, Pressable, ActivityIndicator } from "react-native";
+import { Text, TextInput, View, Pressable, ActivityIndicator, Switch } from "react-native";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { categoryEmoji, formatCurrency } from "@/lib/financas";
@@ -10,7 +10,10 @@ type BudgetCategoryRowProps = {
   spent: number;
   onDelete: () => void;
   isDeleting: boolean;
-  onUpdatePlanned: (plannedAmount: number) => void;
+  isEnvelope: boolean;
+  /** `null` quando não é envelope, ou quando o saldo ainda não terminou de carregar. */
+  envelopeBalance: number | null;
+  onUpdate: (input: { plannedAmount: number; isEnvelope: boolean }) => void;
   isSaving: boolean;
 };
 
@@ -20,12 +23,15 @@ export function BudgetCategoryRow({
   spent,
   onDelete,
   isDeleting,
-  onUpdatePlanned,
+  isEnvelope,
+  envelopeBalance,
+  onUpdate,
   isSaving,
 }: BudgetCategoryRowProps) {
   const { tokens } = useTheme();
   const [isEditing, setIsEditing] = useState(false);
   const [amountText, setAmountText] = useState(String(planned));
+  const [editEnvelope, setEditEnvelope] = useState(isEnvelope);
 
   const overBudget = spent > planned;
   const ratio = planned > 0 ? spent / planned : 0;
@@ -34,13 +40,14 @@ export function BudgetCategoryRow({
 
   function startEdit() {
     setAmountText(String(planned));
+    setEditEnvelope(isEnvelope);
     setIsEditing(true);
   }
 
   function save() {
     const value = Number(amountText.replace(",", "."));
     if (value > 0) {
-      onUpdatePlanned(value);
+      onUpdate({ plannedAmount: value, isEnvelope: editEnvelope });
       setIsEditing(false);
     }
   }
@@ -137,6 +144,19 @@ export function BudgetCategoryRow({
         )}
       </View>
 
+      {isEditing ? (
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.text }}>
+            Modo envelope (guardar sobra)
+          </Text>
+          <Switch
+            value={editEnvelope}
+            onValueChange={setEditEnvelope}
+            trackColor={{ false: tokens.surfaceAlt, true: tokens.accent }}
+          />
+        </View>
+      ) : null}
+
       <View
         style={{
           height: 8,
@@ -155,6 +175,30 @@ export function BudgetCategoryRow({
           }}
         />
       </View>
+
+      {isEnvelope && envelopeBalance !== null ? (
+        <View
+          style={{
+            alignSelf: "flex-start",
+            backgroundColor: envelopeBalance < 0 ? tokens.dangerMuted : tokens.successMuted,
+            borderRadius: 999,
+            paddingHorizontal: 10,
+            paddingVertical: 4,
+          }}
+        >
+          <Text
+            style={{
+              fontFamily: fontFamily.bodyMedium,
+              fontSize: 11.5,
+              color: envelopeBalance < 0 ? tokens.danger : tokens.success,
+            }}
+          >
+            {envelopeBalance < 0
+              ? `Envelope no vermelho: ${formatCurrency(envelopeBalance)}`
+              : `💰 Saldo guardado: ${formatCurrency(envelopeBalance)}`}
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }

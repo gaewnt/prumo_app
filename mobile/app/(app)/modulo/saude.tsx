@@ -12,6 +12,8 @@ import { MedicationCard } from "@/components/saude/medication-card";
 import { NewMedicationForm } from "@/components/saude/new-medication-form";
 import { AppointmentCard } from "@/components/saude/appointment-card";
 import { NewAppointmentForm } from "@/components/saude/new-appointment-form";
+import { MeasurementRow } from "@/components/saude/measurement-row";
+import { NewMeasurementForm, type MeasurementFormOutput } from "@/components/saude/new-measurement-form";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { useAuthStore } from "@/lib/store/auth-store";
@@ -26,11 +28,17 @@ import {
   computeTodayDoses,
   computeAdherenceWeekly,
   computeDayAdherence,
+  computeDueNonDailyMedications,
+  advanceMedicationDose,
   fetchMedicationLogsForMonth,
   createAppointment,
   updateAppointment,
   deleteAppointment,
   toggleAppointmentCompleted,
+  fetchHealthMeasurements,
+  createPressureMeasurement,
+  createGlucoseMeasurement,
+  deleteHealthMeasurement,
   type Medication,
   type Appointment,
 } from "@/lib/saude";
@@ -45,6 +53,7 @@ export default function SaudeScreen() {
   const [editingMedicationId, setEditingMedicationId] = useState<string | null>(null);
   const [showAppointmentForm, setShowAppointmentForm] = useState(false);
   const [editingAppointmentId, setEditingAppointmentId] = useState<string | null>(null);
+  const [showMeasurementForm, setShowMeasurementForm] = useState(false);
 
   const query = useQuery({
     queryKey: ["saude", userId],
@@ -63,6 +72,7 @@ export default function SaudeScreen() {
 
   const todayDoses = computeTodayDoses(medications, medicationLogs, today);
   const adherenceWeekly = computeAdherenceWeekly(medications, medicationLogs);
+  const dueNonDailyMedications = computeDueNonDailyMedications(medications, today);
 
   // Histórico de meses anteriores — `medicationLogs` só cobre os últimos 7
   // dias (a busca de sempre da Saúde), então aqui busca sempre o mês selecionado, inclusive o atual.
@@ -74,6 +84,15 @@ export default function SaudeScreen() {
     enabled: !!userId,
   });
   const heatmapDoseLogs = historyDoseLogsQuery.data ?? [];
+
+  // Medições (pressão/glicemia) tem busca própria porque é uma seção independente das
+  // demais — não precisa entrar no `Promise.all` de `fetchSaude` nem compartilhar cache com ele.
+  const measurementsQuery = useQuery({
+    queryKey: ["saude", "measurements", userId],
+    queryFn: fetchHealthMeasurements,
+    enabled: !!userId,
+  });
+  const measurements = measurementsQuery.data ?? [];
 
   const upcomingAppointments = appointments.filter((a) => !a.completed_at);
   const completedAppointments = appointments
@@ -108,6 +127,11 @@ export default function SaudeScreen() {
     onSuccess: invalidate,
   });
 
+  const advanceDoseMutation = useMutation({
+    mutationFn: (medication: Medication) => advanceMedicationDose(userId!, medication),
+    onSuccess: invalidate,
+  });
+
   const createAppointmentMutation = useMutation({
     mutationFn: (input: Parameters<typeof createAppointment>[1]) => createAppointment(userId!, input),
     onSuccess: () => {
@@ -133,6 +157,24 @@ export default function SaudeScreen() {
   const toggleAppointmentMutation = useMutation({
     mutationFn: (appointment: Appointment) => toggleAppointmentCompleted(appointment),
     onSuccess: invalidate,
+  });
+
+  function invalidateMeasurements() {
+    queryClient.invalidateQueries({ queryKey: ["saude", "measurements", userId] });
+  }
+
+  const createMeasurementMutation = useMutation({
+    mutationFn: (input: MeasurementFormOutput) =>
+      input.kind === "pressao" ? createPressureMeasurement(userId!, input) : createGlucoseMeasurement(userId!, input),
+    onSuccess: () => {
+      setShowMeasurementForm(false);
+      invalidateMeasurements();
+    },
+  });
+
+  const deleteMeasurementMutation = useMutation({
+    mutationFn: (id: string) => deleteHealthMeasurement(id),
+    onSuccess: invalidateMeasurements,
   });
 
   return (
@@ -215,6 +257,7 @@ export default function SaudeScreen() {
                   key={medication.id}
                   medication={medication}
                   todayDoses={todayDoses.filter((d) => d.medication.id === medication.id).map((d) => ({ time: d.time, taken: d.taken }))}
+                  dueNonDaily={dueNonDailyMedications.find((d) => d.medication.id === medication.id) ?? null}
                   isEditing={editingMedicationId === medication.id}
                   onStartEdit={() => setEditingMedicationId(medication.id)}
                   onCancelEdit={() => setEditingMedicationId(null)}
@@ -222,6 +265,7 @@ export default function SaudeScreen() {
                   isSaving={updateMedicationMutation.isPending}
                   onDelete={() => deleteMedicationMutation.mutate(medication)}
                   onToggleDose={(time, taken) => toggleDoseMutation.mutate({ medicationId: medication.id, time, taken })}
+                  onAdvanceDose={() => advanceDoseMutation.mutate(medication)}
                 />
               ))}
 
@@ -247,6 +291,61 @@ export default function SaudeScreen() {
                     + Novo remédio
                   </Text>
                 </Pressable>
+              )}
+            </View>
+
+            <View style={{ gap: 10 }}>
+              <View style={{ gap: 4 }}>
+                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                  Medições
+                </Text>
+                <Text style={{ fontFamily: fontFamily.body, fontSize: 11.5, color: tokens.textMuted }}>
+                  Faixas de referência gerais — não substituem orientação médica.
+                </Text>
+              </View>
+
+              {measurementsQuery.isLoading ? (
+                <ActivityIndicator color={tokens.accent} />
+              ) : (
+                <>
+                  {measurements.length === 0 && !showMeasurementForm ? (
+                    <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                      Nenhuma medição registrada ainda.
+                    </Text>
+                  ) : null}
+
+                  {measurements.map((measurement) => (
+                    <MeasurementRow
+                      key={measurement.id}
+                      measurement={measurement}
+                      onDelete={() => deleteMeasurementMutation.mutate(measurement.id)}
+                    />
+                  ))}
+
+                  {showMeasurementForm ? (
+                    <NewMeasurementForm
+                      isSaving={createMeasurementMutation.isPending}
+                      onCancel={() => setShowMeasurementForm(false)}
+                      onSubmit={(input) => createMeasurementMutation.mutate(input)}
+                    />
+                  ) : (
+                    <Pressable
+                      onPress={() => setShowMeasurementForm(true)}
+                      style={{
+                        borderColor: tokens.border,
+                        borderWidth: 1,
+                        borderStyle: "dashed",
+                        borderRadius: 14,
+                        paddingVertical: 14,
+                        alignItems: "center",
+                      }}
+                    >
+                      <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.accent }}>
+                        + Nova medição
+                      </Text>
+                    </Pressable>
+                  )}
+                </>
               )}
             </View>
 

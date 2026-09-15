@@ -6,6 +6,8 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { supabase } from "@/lib/supabase";
+import { useAuthStore } from "@/lib/store/auth-store";
+import { TotpChallengeForm } from "@/components/auth/totp-challenge-form";
 
 export default function LoginScreen() {
   const { tokens } = useTheme();
@@ -13,6 +15,8 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const session = useAuthStore((s) => s.session);
+  const mfaPending = useAuthStore((s) => s.mfaPending);
 
   async function handleLogin() {
     setError(null);
@@ -20,7 +24,17 @@ export default function LoginScreen() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) setError(error.message);
-    // sucesso: o listener em auth-store atualiza a sessão e o layout redireciona
+    // sucesso: o listener em auth-store atualiza a sessão e o layout redireciona (ou, se a
+    // conta tiver verificação em duas etapas ativa, esta mesma tela troca pra pedir o código).
+  }
+
+  // Senha já confirmada, mas falta o código do app autenticador — mesma tela, fase seguinte.
+  if (session && mfaPending) {
+    return (
+      <Screen>
+        <TotpChallengeForm />
+      </Screen>
+    );
   }
 
   return (

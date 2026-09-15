@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Text, View, Pressable, ActivityIndicator } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -15,6 +15,9 @@ import {
   deleteBudgetCategory,
   copyBudgetFromPreviousMonth,
   computeBudgetProgress,
+  fetchBudgetHistoryForCategories,
+  fetchExpensesForCategoriesSince,
+  computeEnvelopeBalances,
   monthKey,
   CATEGORY_PRESETS,
 } from "@/lib/financas";
@@ -49,13 +52,50 @@ export default function FinancasOrcamentoScreen() {
   const progress = computeBudgetProgress(budget, transactions, month);
   const availableCategories = CATEGORY_PRESETS.filter((c) => !budget.some((b) => b.category === c));
 
+  // Categorias-envelope deste mês — precisam do histórico completo (todos os meses já
+  // orçados) pra calcular o saldo acumulado, não só o mês em exibição (ver
+  // `computeEnvelopeBalances`).
+  const envelopeCategories = useMemo(
+    () => budget.filter((b) => b.is_envelope).map((b) => b.category).sort(),
+    [budget]
+  );
+  const envelopeHistoryQuery = useQuery({
+    queryKey: ["budget-envelope-history", userId, envelopeCategories.join("|")],
+    queryFn: () => fetchBudgetHistoryForCategories(envelopeCategories),
+    enabled: !!userId && envelopeCategories.length > 0,
+  });
+  const earliestEnvelopeMonth = useMemo(() => {
+    const history = envelopeHistoryQuery.data ?? [];
+    return history.reduce((min, row) => (min === null || row.month < min ? row.month : min), null as string | null);
+  }, [envelopeHistoryQuery.data]);
+  const envelopeExpensesQuery = useQuery({
+    queryKey: ["budget-envelope-expenses", userId, envelopeCategories.join("|"), earliestEnvelopeMonth],
+    queryFn: () => fetchExpensesForCategoriesSince(envelopeCategories, earliestEnvelopeMonth!),
+    enabled: !!userId && envelopeCategories.length > 0 && !!earliestEnvelopeMonth,
+  });
+  const envelopeBalances = useMemo(() => {
+    if (!envelopeHistoryQuery.data || !envelopeExpensesQuery.data) return new Map<string, number>();
+    return computeEnvelopeBalances(envelopeHistoryQuery.data, envelopeExpensesQuery.data, month);
+  }, [envelopeHistoryQuery.data, envelopeExpensesQuery.data, month]);
+  // Só pra distinguir "ainda carregando o saldo" (mostra nada) de "saldo é zero mesmo"
+  // (mostra R$ 0,00) — sem isso os dois casos ficariam indistinguíveis no `Map`.
+  const envelopeReady =
+    envelopeCategories.length === 0 || (envelopeHistoryQuery.data !== undefined && envelopeExpensesQuery.data !== undefined);
+
   function invalidateBudget() {
     queryClient.invalidateQueries({ queryKey: ["budget", userId, month] });
+    queryClient.invalidateQueries({ queryKey: ["budget-envelope-history", userId] });
+    queryClient.invalidateQueries({ queryKey: ["budget-envelope-expenses", userId] });
   }
 
   const setBudgetMutation = useMutation({
-    mutationFn: (input: { category: string; plannedAmount: number }) =>
-      setBudgetCategory(userId!, { month, category: input.category, plannedAmount: input.plannedAmount }),
+    mutationFn: (input: { category: string; plannedAmount: number; isEnvelope: boolean }) =>
+      setBudgetCategory(userId!, {
+        month,
+        category: input.category,
+        plannedAmount: input.plannedAmount,
+        isEnvelope: input.isEnvelope,
+      }),
     onSuccess: () => {
       setOpenForm(false);
       invalidateBudget();
@@ -197,25 +237,30 @@ export default function FinancasOrcamentoScreen() {
               />
             ) : null}
 
-            {progress.map((item) => (
-              <BudgetCategoryRow
-                key={item.category}
-                category={item.category}
-                planned={item.planned}
-                spent={item.spent}
-                onDelete={() => {
-                  const b = budget.find((b) => b.category === item.category);
-                  if (b) deleteMutation.mutate({ id: b.id, category: item.category });
-                }}
-                isDeleting={deletingId === item.category}
-                onUpdatePlanned={(plannedAmount) =>
-                  setBudgetMutation.mutate({ category: item.category, plannedAmount })
-                }
-                isSaving={
-                  setBudgetMutation.isPending && setBudgetMutation.variables?.category === item.category
-                }
-              />
-            ))}
+            {progress.map((item) => {
+              const b = budget.find((b) => b.category === item.category);
+              const isEnvelope = b?.is_envelope ?? false;
+              return (
+                <BudgetCategoryRow
+                  key={item.category}
+                  category={item.category}
+                  planned={item.planned}
+                  spent={item.spent}
+                  onDelete={() => {
+                    if (b) deleteMutation.mutate({ id: b.id, category: item.category });
+                  }}
+                  isDeleting={deletingId === item.category}
+                  isEnvelope={isEnvelope}
+                  envelopeBalance={isEnvelope && envelopeReady ? (envelopeBalances.get(item.category) ?? 0) : null}
+                  onUpdate={({ plannedAmount, isEnvelope }) =>
+                    setBudgetMutation.mutate({ category: item.category, plannedAmount, isEnvelope })
+                  }
+                  isSaving={
+                    setBudgetMutation.isPending && setBudgetMutation.variables?.category === item.category
+                  }
+                />
+              );
+            })}
           </View>
         )}
       </View>

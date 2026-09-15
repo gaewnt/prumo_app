@@ -21,12 +21,15 @@ import {
   toggleHabitOnDate,
   computeWeeklyCompletion,
   dayCompletionRatio,
+  toDateString,
   type Habit,
 } from "@/lib/rotina";
 import { RelacoesContent } from "./relacoes";
+import { DesafiosContent } from "./rotina-desafios";
 
 const TABS = [
   { key: "rotina", label: "Hábitos" },
+  { key: "desafios", label: "Desafios" },
   { key: "relacoes", label: "Relações" },
 ];
 
@@ -48,6 +51,9 @@ export function RotinaContent() {
   });
   const habits = habitsQuery.data?.habits ?? [];
   const logs = habitsQuery.data?.logs ?? [];
+  // Fallback nunca deveria ser usado de fato — `HabitRow` só é renderizado depois que
+  // `habitsQuery.data` já chegou, então `logsSince` sempre vem preenchido de verdade.
+  const logsSince = habitsQuery.data?.logsSince ?? toDateString(new Date());
 
   // Histórico de meses anteriores — o mês atual reaproveita `logs` (já vem
   // na busca de sempre); só busca de novo quando a pessoa navega pra outro mês no MonthHeatmap.
@@ -199,6 +205,7 @@ export function RotinaContent() {
                 key={habit.id}
                 habit={habit}
                 logs={logs}
+                logsSince={logsSince}
                 isToggling={pendingHabitId === habit.id}
                 pendingDate={pendingHabitId === habit.id ? pendingDate : null}
                 toggleError={toggleErrors[habit.id]}
@@ -271,7 +278,13 @@ export default function RotinaScreen() {
         <ModuleTabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
 
         <View style={{ marginTop: 16 }}>
-          {activeTab === "relacoes" ? <RelacoesContent /> : <RotinaContent />}
+          {activeTab === "relacoes" ? (
+            <RelacoesContent />
+          ) : activeTab === "desafios" ? (
+            <DesafiosContent />
+          ) : (
+            <RotinaContent />
+          )}
         </View>
       </View>
     </Screen>

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Text, TextInput, View, Pressable, ActivityIndicator } from "react-native";
+import { Text, TextInput, View, Pressable, ActivityIndicator, Switch } from "react-native";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { CategoryIconGrid } from "@/components/financas/category-icon-grid";
@@ -7,7 +7,7 @@ import { CategoryIconGrid } from "@/components/financas/category-icon-grid";
 type NewBudgetCategoryFormProps = {
   availableCategories: readonly string[];
   isSaving: boolean;
-  onSubmit: (input: { category: string; plannedAmount: number }) => void;
+  onSubmit: (input: { category: string; plannedAmount: number; isEnvelope: boolean }) => void;
   onCancel: () => void;
 };
 
@@ -20,6 +20,7 @@ export function NewBudgetCategoryForm({
   const { tokens } = useTheme();
   const [category, setCategory] = useState<string>(availableCategories[0] ?? "");
   const [amountText, setAmountText] = useState("");
+  const [isEnvelope, setIsEnvelope] = useState(false);
 
   const plannedAmount = Number(amountText.replace(",", "."));
   const isValid = category.trim().length > 0 && plannedAmount > 0;
@@ -57,6 +58,22 @@ export function NewBudgetCategoryForm({
             }}
           />
 
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <View style={{ flex: 1, gap: 1 }}>
+              <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.text }}>
+                Modo envelope
+              </Text>
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 11.5, color: tokens.textMuted }}>
+                O que sobrar (ou faltar) fica guardado pro próximo mês, em vez de resetar.
+              </Text>
+            </View>
+            <Switch
+              value={isEnvelope}
+              onValueChange={setIsEnvelope}
+              trackColor={{ false: tokens.surfaceAlt, true: tokens.accent }}
+            />
+          </View>
+
           <View style={{ flexDirection: "row", gap: 8 }}>
             <Pressable onPress={onCancel} style={{ flex: 1, alignItems: "center", paddingVertical: 12 }}>
               <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.textMuted }}>
@@ -64,7 +81,7 @@ export function NewBudgetCategoryForm({
               </Text>
             </Pressable>
             <Pressable
-              onPress={() => onSubmit({ category, plannedAmount })}
+              onPress={() => onSubmit({ category, plannedAmount, isEnvelope })}
               disabled={isSaving || !isValid}
               style={{
                 flex: 1,

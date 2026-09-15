@@ -26,18 +26,20 @@ export type ModuleDefinition = {
   resumo: string;
   /** Slugs das abas internas, na ordem em que aparecem — só presente nos hubs. */
   hubOf?: string[];
+  /** Exige o plano Prumo Plus — ver `lib/subscription.ts`. Ausente/false = grátis. */
+  plusOnly?: boolean;
 };
 
 export const modules: ModuleDefinition[] = [
   { slug: "financas", nome: "Finanças", icone: "💰", status: "mapeado", resumo: "Contas, cartões, orçamento, metas e tags." },
   { slug: "rotina", nome: "Rotina", icone: "📅", status: "mapeado", resumo: "Hábitos diários, streaks e relações.", hubOf: ["rotina", "relacoes"] },
-  { slug: "veiculo", nome: "Veículo", icone: "🚗", status: "mapeado", resumo: "Custo por km, faturamento e o Copiloto." },
-  { slug: "dev-pessoal", nome: "Desenvolvimento Pessoal", icone: "✨", status: "mapeado", resumo: "Treino, dieta, beleza, mente, detox e viagens.", hubOf: ["dev-pessoal", "treino", "dieta", "beleza", "mente", "detox", "viagens"] },
+  { slug: "veiculo", nome: "Veículo", icone: "🚗", status: "mapeado", resumo: "Custo por km, faturamento e o Copiloto.", plusOnly: true },
+  { slug: "dev-pessoal", nome: "Desenvolvimento Pessoal", icone: "✨", status: "mapeado", resumo: "Treino, dieta, beleza, mente, detox e viagens.", hubOf: ["dev-pessoal", "treino", "dieta", "beleza", "mente", "detox", "viagens"], plusOnly: true },
   { slug: "estudos", nome: "Estudos", icone: "🎓", status: "mapeado", resumo: "Matérias, sessões de estudo e biblioteca.", hubOf: ["estudos", "biblioteca"] },
-  { slug: "carreira", nome: "Carreira", icone: "💼", status: "mapeado", resumo: "Metas de carreira, cursos e prazos importantes." },
-  { slug: "casa", nome: "Casa", icone: "🏠", status: "mapeado", resumo: "Lista de compras e tarefas domésticas recorrentes." },
-  { slug: "saude", nome: "Saúde", icone: "❤️", status: "mapeado", resumo: "Remédios com lembrete, consultas, terapias e hábitos do dia." },
-  { slug: "pet", nome: "Pet", icone: "🐾", status: "mapeado", resumo: "Vacinas, consultas e cuidados de cada pet." },
+  { slug: "carreira", nome: "Carreira", icone: "💼", status: "mapeado", resumo: "Metas de carreira, cursos e prazos importantes.", plusOnly: true },
+  { slug: "casa", nome: "Casa", icone: "🏠", status: "mapeado", resumo: "Lista de compras e tarefas domésticas recorrentes.", plusOnly: true },
+  { slug: "saude", nome: "Saúde", icone: "❤️", status: "mapeado", resumo: "Remédios com lembrete, consultas, terapias e hábitos do dia.", plusOnly: true },
+  { slug: "pet", nome: "Pet", icone: "🐾", status: "mapeado", resumo: "Vacinas, consultas e cuidados de cada pet.", plusOnly: true },
 ];
 
 export function getModuleBySlug(slug: string) {

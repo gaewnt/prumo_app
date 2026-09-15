@@ -9,6 +9,7 @@ import { CategoryDonut } from "@/components/charts/category-donut";
 import { MonthHeatmap } from "@/components/ui/month-heatmap";
 import { MonthNav } from "@/components/ui/month-nav";
 import { ModuleTabs } from "@/components/ui/module-tabs";
+import { SearchInput } from "@/components/ui/search-input";
 import { SessionLogger } from "@/components/estudos/session-logger";
 import { SessionHistoryRow } from "@/components/estudos/session-history-row";
 import { NewSubjectForm } from "@/components/estudos/new-subject-form";
@@ -131,8 +132,15 @@ export function EstudosContent() {
   const milestone = streakMilestone(streak);
   const lastSession = sessions[sessions.length - 1];
 
-  const pendingTasks = tasks.filter((t) => !t.done);
-  const doneTasks = tasks.filter((t) => t.done);
+  // Busca nas tarefas/provas — a lista acumula rápido ao longo de um semestre.
+  const [taskSearch, setTaskSearch] = useState("");
+  const taskSearchTerm = taskSearch.trim().toLowerCase();
+  const matchesTaskSearch = (t: (typeof tasks)[number]) =>
+    taskSearchTerm.length === 0 ||
+    t.title.toLowerCase().includes(taskSearchTerm) ||
+    (t.notes ?? "").toLowerCase().includes(taskSearchTerm);
+  const pendingTasks = tasks.filter((t) => !t.done && matchesTaskSearch(t));
+  const doneTasks = tasks.filter((t) => t.done && matchesTaskSearch(t));
 
   const weekdaysWithClasses = [0, 1, 2, 3, 4, 5, 6].filter((weekday) => schedulesForWeekday(schedules, weekday).length > 0);
 
@@ -496,6 +504,16 @@ export function EstudosContent() {
             {tasks.length === 0 && !showTaskForm ? (
               <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
                 Nenhuma tarefa ou prova cadastrada ainda.
+              </Text>
+            ) : null}
+
+            {tasks.length > 5 ? (
+              <SearchInput value={taskSearch} onChangeText={setTaskSearch} placeholder="Buscar tarefa ou prova" />
+            ) : null}
+
+            {tasks.length > 0 && taskSearchTerm.length > 0 && pendingTasks.length === 0 && doneTasks.length === 0 ? (
+              <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                Nenhuma tarefa encontrada.
               </Text>
             ) : null}
 

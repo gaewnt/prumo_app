@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Text, View, Pressable, ActivityIndicator } from "react-native";
+import { Text, View, Pressable, ActivityIndicator, TextInput } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Screen } from "@/components/ui/screen";
@@ -13,7 +13,7 @@ import { NewBookForm } from "@/components/biblioteca/new-book-form";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { useAuthStore } from "@/lib/store/auth-store";
-import { streakMilestone } from "@/lib/rotina";
+import { streakMilestone, toDateString } from "@/lib/rotina";
 import {
   fetchBiblioteca,
   createBook,
@@ -34,6 +34,7 @@ import {
   type ReadingLog,
   type BookStatus,
 } from "@/lib/biblioteca";
+import { updateModulePreferenceField } from "@/lib/onboarding";
 
 /** Conteúdo de Biblioteca — usado tanto na rota própria quanto como aba dentro do hub Estudos. */
 export function BibliotecaContent() {
@@ -48,6 +49,8 @@ export function BibliotecaContent() {
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [quoteFormBookId, setQuoteFormBookId] = useState<string | null>(null);
   const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
+  const [editingMetaPaginas, setEditingMetaPaginas] = useState(false);
+  const [metaPaginasText, setMetaPaginasText] = useState("");
 
   const query = useQuery({
     queryKey: ["biblioteca", userId],
@@ -58,6 +61,8 @@ export function BibliotecaContent() {
   const logs = query.data?.logs ?? [];
   const quotes = query.data?.quotes ?? [];
   const metaLivros = query.data?.metaLivros ?? null;
+  const metaPaginasDia = query.data?.metaPaginasDia ?? null;
+  const paginasHoje = computeDayPages(toDateString(new Date()), logs);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ["biblioteca", userId] });
@@ -153,6 +158,17 @@ export function BibliotecaContent() {
     onSuccess: invalidate,
   });
 
+  /** Meta diária de páginas — mesmo padrão de "renda fixa" em Finanças: guardada em
+   * `module_preferences.answers` (sem tabela nova), editável direto aqui. Alimenta a Visão
+   * Hoje ("faltam X páginas hoje"), diferente de `metaLivros` (anual, só onboarding). */
+  const metaPaginasMutation = useMutation({
+    mutationFn: (valor: string) => updateModulePreferenceField(userId!, "biblioteca", { meta_paginas_dia: valor }),
+    onSuccess: () => {
+      setEditingMetaPaginas(false);
+      invalidate();
+    },
+  });
+
   return (
     <View style={{ gap: 20 }}>
       <View style={{ gap: 4 }}>
@@ -181,6 +197,76 @@ export function BibliotecaContent() {
               <ProgressBar progress={booksFinishedThisYear / metaLivros} />
             </StatCard>
           ) : null}
+
+          <View
+            style={{
+              backgroundColor: tokens.surface,
+              borderColor: tokens.border,
+              borderWidth: 1,
+              borderRadius: 16,
+              padding: 14,
+              gap: 12,
+            }}
+          >
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={{ fontFamily: fontFamily.body, fontSize: 12.5, color: tokens.textMuted }}>
+                  Meta diária de páginas
+                </Text>
+                {editingMetaPaginas ? (
+                  <TextInput
+                    value={metaPaginasText}
+                    onChangeText={setMetaPaginasText}
+                    placeholder="Ex: 20"
+                    placeholderTextColor={tokens.textMuted}
+                    keyboardType="number-pad"
+                    autoFocus
+                    style={{
+                      fontFamily: fontFamily.mono,
+                      fontSize: 18,
+                      color: tokens.text,
+                      backgroundColor: tokens.surfaceAlt,
+                      borderRadius: 8,
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      marginTop: 4,
+                    }}
+                  />
+                ) : (
+                  <Text style={{ fontFamily: fontFamily.mono, fontSize: 20, color: tokens.text, marginTop: 2 }}>
+                    {metaPaginasDia ? `${paginasHoje} de ${metaPaginasDia} páginas` : "Não definida"}
+                  </Text>
+                )}
+              </View>
+              {editingMetaPaginas ? (
+                <Pressable
+                  onPress={() => metaPaginasMutation.mutate(metaPaginasText)}
+                  disabled={metaPaginasMutation.isPending}
+                >
+                  {metaPaginasMutation.isPending ? (
+                    <ActivityIndicator size="small" color={tokens.accent} />
+                  ) : (
+                    <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                      Salvar
+                    </Text>
+                  )}
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={() => {
+                    setMetaPaginasText(metaPaginasDia ? String(metaPaginasDia) : "");
+                    setEditingMetaPaginas(true);
+                  }}
+                  hitSlop={8}
+                >
+                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                    Editar
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+            {metaPaginasDia ? <ProgressBar progress={paginasHoje / metaPaginasDia} /> : null}
+          </View>
 
           <StatCard
             label="Sequência de leitura"

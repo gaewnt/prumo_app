@@ -16,7 +16,8 @@ import {
   type Gender,
 } from "@/lib/onboarding";
 import { fetchLatestBodyLog, logBodyWeight } from "@/lib/treino";
-import { scheduleDailyReminder, cancelReminder, notificationsSupported } from "@/lib/notifications";
+import { cancelReminder, notificationsSupported } from "@/lib/notifications";
+import { scheduleAllWellnessReminders, cancelAllWellnessReminders } from "@/lib/wellness-reminders";
 import { subscribeWebPush, unsubscribeWebPush, webPushSupported } from "@/lib/web-push";
 
 function SectionLabel({ children }: { children: string }) {
@@ -57,10 +58,11 @@ export default function PerfilScreen() {
     enabled: !!userId,
   });
   const lembreteId = appPrefsQuery.data?.lembrete_diario_id as string | null | undefined;
+  // Só usado no caminho web (Web Push, horário único fixo) — no nativo virou vários
+  // horários por categoria, ver `lib/wellness-reminders.ts`.
   const lembreteHora = (appPrefsQuery.data?.lembrete_diario_hora as string | undefined) ?? "20:00";
+  const lembreteIds = (appPrefsQuery.data?.lembrete_diario_ids as string[] | undefined) ?? [];
   const lembreteAtivo = !!lembreteId;
-  const [editingHora, setEditingHora] = useState(false);
-  const [horaText, setHoraText] = useState(lembreteHora);
 
   // Migração de uma vez — se a pessoa já tinha ativado o lembrete antigo (só em
   // Finanças), traz pra cá e desativa lá, pra não ficar um alarme órfão sem controle na
@@ -113,7 +115,7 @@ export default function PerfilScreen() {
           }
           await updateModulePreferenceField(userId!, "app", {
             lembrete_diario_id: "web-push",
-            lembrete_diario_hora: horaText || lembreteHora,
+            lembrete_diario_hora: lembreteHora,
           });
         } else {
           await unsubscribeWebPush();
@@ -122,22 +124,25 @@ export default function PerfilScreen() {
         return;
       }
       if (ativar) {
-        const id = await scheduleDailyReminder(
-          horaText || lembreteHora,
-          "Prumo",
-          "Não esqueça de registrar o que rolou hoje."
-        );
+        // Vários horários por categoria (registrar/água/dentes) em vez de um único horário
+        // fixo — ver `lib/wellness-reminders.ts` pros detalhes de cada um.
+        const ids = await scheduleAllWellnessReminders();
         await updateModulePreferenceField(userId!, "app", {
-          lembrete_diario_id: id,
-          lembrete_diario_hora: horaText || lembreteHora,
+          lembrete_diario_id: ids[0] ?? "multi",
+          lembrete_diario_ids: ids,
         });
       } else {
+        // Cancela tanto os ids novos (array) quanto um eventual id único antigo (de antes
+        // dessa mudança, ou migrado do lembrete legado de Finanças).
         await cancelReminder(lembreteId);
-        await updateModulePreferenceField(userId!, "app", { lembrete_diario_id: null });
+        await cancelAllWellnessReminders(lembreteIds);
+        await updateModulePreferenceField(userId!, "app", {
+          lembrete_diario_id: null,
+          lembrete_diario_ids: [],
+        });
       }
     },
     onSuccess: () => {
-      setEditingHora(false);
       queryClient.invalidateQueries({ queryKey: ["app-prefs", userId] });
     },
   });
@@ -355,10 +360,12 @@ export default function PerfilScreen() {
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontFamily: fontFamily.body, fontSize: 14, color: tokens.text }}>
-                      Lembrete diário de lançamento
+                      Lembretes de registro e bem-estar
                     </Text>
                     <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted, marginTop: 2 }}>
-                      Um aviso todo dia às {lembreteHora} pra não esquecer de registrar o que rolou.
+                      {Platform.OS === "web"
+                        ? `Um aviso por dia às ${lembreteHora} pra não esquecer de registrar o que rolou.`
+                        : "Registrar de hora em hora, beber água a cada 30 min e escovar os dentes de manhã e à noite — mensagem diferente a cada vez, sem avisos entre 22h e 7h."}
                     </Text>
                   </View>
                   {toggleLembreteMutation.isPending ? (
@@ -382,35 +389,6 @@ export default function PerfilScreen() {
                   <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.danger }}>
                     {(toggleLembreteMutation.error as Error)?.message ?? "Não deu pra ativar."}
                   </Text>
-                ) : null}
-                {lembreteAtivo || editingHora ? (
-                  editingHora ? (
-                    <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
-                      <TextInput
-                        value={horaText}
-                        onChangeText={setHoraText}
-                        placeholder="HH:MM"
-                        placeholderTextColor={tokens.textMuted}
-                        style={[fieldStyle, { width: 90, fontFamily: fontFamily.mono, paddingVertical: 8 }]}
-                      />
-                      <Pressable onPress={() => toggleLembreteMutation.mutate(true)}>
-                        <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                          Salvar horário
-                        </Text>
-                      </Pressable>
-                    </View>
-                  ) : (
-                    <Pressable
-                      onPress={() => {
-                        setHoraText(lembreteHora);
-                        setEditingHora(true);
-                      }}
-                    >
-                      <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                        Mudar horário
-                      </Text>
-                    </Pressable>
-                  )
                 ) : null}
               </View>
               <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>

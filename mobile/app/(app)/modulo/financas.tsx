@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Text, TextInput, View, Pressable, ActivityIndicator, ScrollView } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -9,6 +9,7 @@ import { BalanceLineChart } from "@/components/charts/balance-line-chart";
 import { SummaryCard } from "@/components/financas/summary-card";
 import { MonthNav } from "@/components/ui/month-nav";
 import { PendingAlerts } from "@/components/financas/pending-alerts";
+import { SearchInput } from "@/components/ui/search-input";
 import { CategoryBreakdown } from "@/components/financas/category-breakdown";
 import { BillRow } from "@/components/financas/bill-row";
 import { InvestmentRow } from "@/components/financas/investment-row";
@@ -16,6 +17,7 @@ import { NewTransactionForm } from "@/components/financas/new-transaction-form";
 import { NewBillForm } from "@/components/financas/new-bill-form";
 import { NewInvestmentForm } from "@/components/financas/new-investment-form";
 import { TransferForm } from "@/components/financas/transfer-form";
+import { ModuleTabs, type ModuleTab } from "@/components/ui/module-tabs";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import { useAuthStore } from "@/lib/store/auth-store";
@@ -33,6 +35,9 @@ import {
   computeTotalAccountsBalance,
   computePendingBillsTotal,
   upcomingBills,
+  fetchBudgetForMonth,
+  computeBudgetProgress,
+  monthKey,
   createTransaction,
   updateTransaction,
   deleteTransaction,
@@ -45,16 +50,34 @@ import {
   deleteInvestment,
   updateTransferBetweenAccounts,
   formatCurrency,
-  formatHistoryDate,
+  formatHistoryGroupLabel,
   categoryEmoji,
   rendaFixaJaEfetivadaEsteMes,
   RENDA_FIXA_CATEGORY,
   TRANSACTION_HISTORY_LIMIT,
+  ensureRecurringTransactionsGenerated,
   type Bill,
 } from "@/lib/financas";
 import { fetchModulePreference, updateModulePreferenceField } from "@/lib/onboarding";
 
 type OpenForm = "none" | "transaction" | "bill" | "investment";
+
+type TabKey = "geral" | "historico" | "graficos" | "contas" | "investimentos";
+
+const HISTORY_RANGES: { key: "7d" | "15d" | "30d" | "tudo"; label: string }[] = [
+  { key: "7d", label: "7 dias" },
+  { key: "15d", label: "15 dias" },
+  { key: "30d", label: "30 dias" },
+  { key: "tudo", label: "Tudo" },
+];
+
+const TABS: ModuleTab[] = [
+  { key: "geral", label: "Visão geral" },
+  { key: "historico", label: "Histórico" },
+  { key: "graficos", label: "Gráficos" },
+  { key: "contas", label: "Contas a vencer" },
+  { key: "investimentos", label: "Investimentos" },
+];
 
 /** Atalhos pras telas novas do módulo — cada uma é uma rota própria, pra não empilhar
  * tudo numa única tela gigante. */
@@ -65,6 +88,7 @@ const SHORTCUTS: { icon: string; label: string; route: string }[] = [
   { icon: "🎯", label: "Metas", route: "/modulo/financas-metas" },
   { icon: "🏷️", label: "Tags", route: "/modulo/financas-tags" },
   { icon: "🗂️", label: "Categorias", route: "/modulo/financas-categorias" },
+  { icon: "🔁", label: "Fixos", route: "/modulo/financas-recorrentes" },
 ];
 
 export default function FinancasScreen() {
@@ -73,6 +97,7 @@ export default function FinancasScreen() {
   const queryClient = useQueryClient();
   const userId = useAuthStore((s) => s.session?.user.id);
 
+  const [activeTab, setActiveTab] = useState<TabKey>("geral");
   const [openForm, setOpenForm] = useState<OpenForm>("none");
   const [savingBillId, setSavingBillId] = useState<string | null>(null);
   const [editingBillId, setEditingBillId] = useState<string | null>(null);
@@ -80,6 +105,17 @@ export default function FinancasScreen() {
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
   const [editingRendaFixa, setEditingRendaFixa] = useState(false);
   const [rendaFixaText, setRendaFixaText] = useState("");
+  // Confirmação da renda fixa com valor editável — antes o botão "Efetivado" lançava
+  // direto o valor configurado, sem chance de ajustar caso o valor recebido no mês
+  // tenha sido diferente do de sempre (13º, desconto, hora extra, etc.).
+  const [confirmingRendaFixa, setConfirmingRendaFixa] = useState(false);
+  const [rendaFixaPaidText, setRendaFixaPaidText] = useState("");
+  const [hasSubmittedRendaFixaPay, setHasSubmittedRendaFixaPay] = useState(false);
+  // Busca no histórico — a lista já passa de 200 lançamentos com facilidade, então achar um
+  // específico rolando manualmente fica ruim.
+  const [historySearch, setHistorySearch] = useState("");
+  // Período do histórico — padrão de 7 dias em vez de mostrar tudo de uma vez.
+  const [historyRange, setHistoryRange] = useState<"7d" | "15d" | "30d" | "tudo">("7d");
 
   const query = useQuery({
     queryKey: ["financas", userId],
@@ -118,9 +154,41 @@ export default function FinancasScreen() {
   const balanceRows = extrasQuery.data?.balanceRows ?? [];
   const totalAccountsBalance = computeTotalAccountsBalance(activeAccounts, balanceRows);
 
+  // Gera sozinho, ao abrir a tela mais visitada do módulo, os lançamentos fixos genéricos
+  // (débito automático/receita recorrente) ainda não lançados no mês corrente — mesma ideia
+  // de `ensureCardRecurringChargesGenerated`, só que aqui direto em Finanças (não só na tela
+  // de gestão dedicada), pra não depender da pessoa abrir "Fixos" todo mês. `hasGeneratedRef`
+  // trava contra rodar de novo a cada refetch/invalidate.
+  const hasGeneratedRecurringRef = useRef(false);
+  useEffect(() => {
+    if (!userId || !extrasQuery.data || hasGeneratedRecurringRef.current) return;
+    hasGeneratedRecurringRef.current = true;
+    ensureRecurringTransactionsGenerated(userId, extrasQuery.data.recurringTransactions, extrasQuery.data.balanceRows)
+      .then((count) => {
+        if (count > 0) {
+          queryClient.invalidateQueries({ queryKey: ["financas", userId] });
+          queryClient.invalidateQueries({ queryKey: ["financas-extras", userId] });
+        }
+      })
+      .catch(() => {
+        hasGeneratedRecurringRef.current = false;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, extrasQuery.data]);
+
   const customCategoriesQuery = useQuery({
     queryKey: ["financas-custom-categories", userId],
     queryFn: fetchCustomCategories,
+    enabled: !!userId,
+  });
+
+  // Planejamento mensal do mês atual (não o `historyMonth` navegável) — só pra detectar
+  // categoria estourada e avisar na Visão geral, reaproveitando o mesmo cálculo da tela
+  // de Planejamento.
+  const currentMonth = monthKey();
+  const budgetQuery = useQuery({
+    queryKey: ["budget", userId, currentMonth],
+    queryFn: () => fetchBudgetForMonth(currentMonth),
     enabled: !!userId,
   });
   const allCategories = allCategoryNames(customCategoriesQuery.data ?? []);
@@ -154,12 +222,52 @@ export default function FinancasScreen() {
   const transactionsInHistoryMonth = transactions.filter(
     (t) => t.occurred_at >= historyMonthStartStr && t.occurred_at <= historyMonthEndStr
   );
+  // Histórico agora navega por período relativo (7/15/30 dias, ou tudo) em vez de mês —
+  // uma lista de "últimos 200" ficava ruim de navegar mês a mês; separado por dia embaixo.
+  const historyRangeCutoffStr =
+    historyRange === "tudo"
+      ? null
+      : (() => {
+          const days = historyRange === "7d" ? 7 : historyRange === "15d" ? 15 : 30;
+          const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
+          return `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
+        })();
+  const transactionsInHistoryRange = historyRangeCutoffStr
+    ? transactions.filter((t) => t.occurred_at >= historyRangeCutoffStr)
+    : transactions;
+  const historySearchTerm = historySearch.trim().toLowerCase();
+  const filteredHistoryTransactions =
+    historySearchTerm.length === 0
+      ? transactionsInHistoryRange
+      : transactionsInHistoryRange.filter(
+          (t) =>
+            (t.description ?? "").toLowerCase().includes(historySearchTerm) ||
+            t.category.toLowerCase().includes(historySearchTerm)
+        );
+  // `transactions` já vem ordenado por data desc — agrupar preservando a ordem basta
+  // pra juntar lançamentos do mesmo dia num único bloco com um cabeçalho.
+  const historyGroups: { date: string; items: typeof filteredHistoryTransactions }[] = [];
+  for (const t of filteredHistoryTransactions) {
+    const lastGroup = historyGroups[historyGroups.length - 1];
+    if (lastGroup && lastGroup.date === t.occurred_at) {
+      lastGroup.items.push(t);
+    } else {
+      historyGroups.push({ date: t.occurred_at, items: [t] });
+    }
+  }
   const investedTotal = computeInvestedTotal(investments);
   const weeklySpend = computeWeeklySpend(transactions);
   const cashFlowSeries = computeCashFlowSeries(transactions);
   const pendingBillsTotal = computePendingBillsTotal(bills);
   const saldoSeguro = summary.balance - pendingBillsTotal;
   const alertBills = upcomingBills(bills);
+  // Categoria em modo envelope não entra no alerta de estouro — passar do previsto NO MÊS
+  // não é problema ali quando sobrou reserva de meses anteriores pra cobrir (o saldo do
+  // envelope, visível na aba Planejamento, é o número que importa nesse caso).
+  const envelopeCategorySet = new Set((budgetQuery.data ?? []).filter((b) => b.is_envelope).map((b) => b.category));
+  const budgetOverruns = computeBudgetProgress(budgetQuery.data ?? [], transactions, currentMonth).filter(
+    (p) => p.spent > p.planned && !envelopeCategorySet.has(p.category)
+  );
   const cashFlowEnd = cashFlowSeries[cashFlowSeries.length - 1] ?? 0;
 
   function invalidate() {
@@ -262,6 +370,350 @@ export default function FinancasScreen() {
     },
   });
 
+  function startConfirmingRendaFixa() {
+    setRendaFixaPaidText(rendaFixa ?? "");
+    setHasSubmittedRendaFixaPay(false);
+    setConfirmingRendaFixa(true);
+  }
+
+  function cancelConfirmingRendaFixa() {
+    setConfirmingRendaFixa(false);
+    setHasSubmittedRendaFixaPay(false);
+  }
+
+  const parsedRendaFixaPaid = Number(rendaFixaPaidText.replace(",", "."));
+
+  function confirmRendaFixaPay() {
+    if (hasSubmittedRendaFixaPay || !(parsedRendaFixaPaid > 0)) return;
+    setHasSubmittedRendaFixaPay(true);
+    createTransactionMutation.mutate({
+      kind: "income",
+      category: RENDA_FIXA_CATEGORY,
+      amount: parsedRendaFixaPaid,
+      description: "Renda fixa mensal",
+    });
+    setConfirmingRendaFixa(false);
+  }
+
+  const rendaFixaCard = (
+    <View
+      style={{
+        backgroundColor: tokens.surface,
+        borderColor: tokens.border,
+        borderWidth: 1,
+        borderRadius: 16,
+        padding: 14,
+        gap: 12,
+      }}
+    >
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={{ fontFamily: fontFamily.body, fontSize: 12.5, color: tokens.textMuted }}>
+            Renda fixa mensal
+          </Text>
+          {editingRendaFixa ? (
+            <TextInput
+              value={rendaFixaText}
+              onChangeText={setRendaFixaText}
+              placeholder="Ex: 2500,00"
+              placeholderTextColor={tokens.textMuted}
+              keyboardType="decimal-pad"
+              autoFocus
+              style={{
+                fontFamily: fontFamily.mono,
+                fontSize: 18,
+                color: tokens.text,
+                backgroundColor: tokens.surfaceAlt,
+                borderRadius: 8,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                marginTop: 4,
+              }}
+            />
+          ) : (
+            <Text style={{ fontFamily: fontFamily.mono, fontSize: 20, color: tokens.text, marginTop: 2 }}>
+              {rendaFixa ? formatCurrency(Number(rendaFixa.replace(",", "."))) : "Não informado"}
+            </Text>
+          )}
+        </View>
+        {editingRendaFixa ? (
+          <Pressable onPress={() => rendaFixaMutation.mutate(rendaFixaText)} disabled={rendaFixaMutation.isPending}>
+            {rendaFixaMutation.isPending ? (
+              <ActivityIndicator size="small" color={tokens.accent} />
+            ) : (
+              <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                Salvar
+              </Text>
+            )}
+          </Pressable>
+        ) : (
+          <View style={{ alignItems: "flex-end", gap: 8 }}>
+            {rendaFixa && !confirmingRendaFixa ? (
+              rendaFixaEfetivada ? (
+                // Já foi lançada este mês — esconde o botão em vez de deixar visível
+                // pra sempre, que era o que deixava fácil tocar de novo sem querer e
+                // duplicar a receita.
+                <View
+                  style={{
+                    backgroundColor: tokens.successMuted,
+                    borderRadius: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                  }}
+                >
+                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.success }}>
+                    Efetivada este mês
+                  </Text>
+                </View>
+              ) : (
+                <Pressable
+                  onPress={startConfirmingRendaFixa}
+                  style={{
+                    backgroundColor: tokens.successMuted,
+                    borderRadius: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                  }}
+                >
+                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.success }}>
+                    Efetivar
+                  </Text>
+                </Pressable>
+              )
+            ) : null}
+            {!confirmingRendaFixa ? (
+              <Pressable
+                onPress={() => {
+                  setRendaFixaText(rendaFixa ?? "");
+                  setEditingRendaFixa(true);
+                }}
+                hitSlop={8}
+              >
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                  Editar
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )}
+      </View>
+
+      {confirmingRendaFixa ? (
+        <View style={{ gap: 8 }}>
+          <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+            Valor realmente recebido esse mês (ajuste se veio diferente do configurado)
+          </Text>
+          <TextInput
+            value={rendaFixaPaidText}
+            onChangeText={setRendaFixaPaidText}
+            keyboardType="decimal-pad"
+            editable={!hasSubmittedRendaFixaPay}
+            autoFocus
+            style={{
+              fontFamily: fontFamily.body,
+              fontSize: 15,
+              color: tokens.text,
+              backgroundColor: tokens.surfaceAlt,
+              borderRadius: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            }}
+          />
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Pressable
+              onPress={cancelConfirmingRendaFixa}
+              disabled={hasSubmittedRendaFixaPay}
+              style={{ flex: 1, alignItems: "center", paddingVertical: 10 }}
+            >
+              <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
+                Cancelar
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={confirmRendaFixaPay}
+              disabled={hasSubmittedRendaFixaPay || !(parsedRendaFixaPaid > 0)}
+              style={{
+                flex: 1,
+                backgroundColor: tokens.accent,
+                borderRadius: 10,
+                paddingVertical: 10,
+                alignItems: "center",
+                opacity: hasSubmittedRendaFixaPay || !(parsedRendaFixaPaid > 0) ? 0.6 : 1,
+              }}
+            >
+              {hasSubmittedRendaFixaPay ? (
+                <ActivityIndicator size="small" color={tokens.accentText} />
+              ) : (
+                <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 13, color: tokens.accentText }}>
+                  Confirmar
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+
+  const quickAddSection = (
+    <View style={{ gap: 12 }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+            Lançar despesa/receita
+          </Text>
+          <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+            Registro rápido — o histórico completo fica na aba "Histórico".
+          </Text>
+        </View>
+        <Pressable onPress={() => setOpenForm(openForm === "transaction" ? "none" : "transaction")}>
+          <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+            {openForm === "transaction" ? "Cancelar" : "+ Adicionar"}
+          </Text>
+        </Pressable>
+      </View>
+
+      {openForm === "transaction" ? (
+        <NewTransactionForm
+          isSaving={createTransactionMutation.isPending}
+          onCancel={() => setOpenForm("none")}
+          onSubmit={(input) => createTransactionMutation.mutate(input)}
+          allCategories={allCategories}
+          accounts={activeAccounts}
+          cards={activeCards}
+          tags={tags}
+          recentDescriptions={recentDescriptions}
+        />
+      ) : null}
+    </View>
+  );
+
+  function renderTransactionRow(t: (typeof transactions)[number]) {
+    const account = activeAccounts.find((a) => a.id === t.account_id);
+    const card = activeCards.find((c) => c.id === t.card_id);
+    const transactionTags = tags.filter((tag) => t.tagIds.includes(tag.id));
+    return editingTransactionId === t.id && t.kind === "transfer" ? (
+      // Transferência usa o mesmo `TransferForm` do
+      // cadastro (com conta de origem/destino), não o formulário rápido de
+      // despesa/receita, que não tem esses campos.
+      <TransferForm
+        key={t.id}
+        initial={{
+          fromAccountId: t.account_id ?? "",
+          toAccountId: t.transfer_to_account_id ?? "",
+          amount: t.amount,
+          description: t.description ?? "",
+        }}
+        submitLabel="Salvar alterações"
+        accounts={activeAccounts}
+        isSaving={updateTransferMutation.isPending}
+        onCancel={() => setEditingTransactionId(null)}
+        onSubmit={(input) => updateTransferMutation.mutate({ id: t.id, input })}
+      />
+    ) : editingTransactionId === t.id ? (
+      <NewTransactionForm
+        key={t.id}
+        initial={{
+          kind: t.kind,
+          category: t.category,
+          amount: t.amount,
+          description: t.description ?? "",
+          accountId: t.account_id,
+          cardId: t.card_id,
+          tagIds: t.tagIds,
+          occurredAt: t.occurred_at,
+          occurredTime: t.occurred_time,
+        }}
+        submitLabel="Salvar alterações"
+        isSaving={updateTransactionMutation.isPending}
+        onCancel={() => setEditingTransactionId(null)}
+        onSubmit={(input) => updateTransactionMutation.mutate({ id: t.id, input })}
+        allCategories={allCategories}
+        accounts={activeAccounts}
+        cards={activeCards}
+        tags={tags}
+        recentDescriptions={recentDescriptions}
+      />
+    ) : (
+      <View
+        key={t.id}
+        style={{
+          backgroundColor: tokens.surface,
+          borderColor: tokens.border,
+          borderWidth: 1,
+          borderRadius: 14,
+          padding: 14,
+          gap: 8,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <View
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              backgroundColor: tokens.surfaceAlt,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Text style={{ fontSize: 16 }}>{t.kind === "transfer" ? "🔁" : categoryEmoji(t.category)}</Text>
+          </View>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.text }}>
+              {t.description || t.category}
+            </Text>
+            <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+              {t.category}
+              {t.occurred_time ? ` · ${t.occurred_time}` : ""}
+              {account ? ` · ${account.name}` : ""}
+              {card ? ` · 💳 ${card.name}` : ""}
+            </Text>
+          </View>
+          <Text
+            style={{
+              fontFamily: fontFamily.bodySemibold,
+              fontSize: 14,
+              color: t.kind === "income" ? tokens.success : t.kind === "transfer" ? tokens.textMuted : tokens.danger,
+            }}
+          >
+            {t.kind === "income" ? "+" : t.kind === "transfer" ? "" : "-"}
+            {formatCurrency(t.amount)}
+          </Text>
+          <Pressable onPress={() => setEditingTransactionId(t.id)} hitSlop={8}>
+            <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.accent }}>
+              Editar
+            </Text>
+          </Pressable>
+          <Pressable onPress={() => deleteTransactionMutation.mutate(t.id)} hitSlop={8}>
+            <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+              ✕
+            </Text>
+          </Pressable>
+        </View>
+        {transactionTags.length > 0 ? (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+            {transactionTags.map((tag) => (
+              <View
+                key={tag.id}
+                style={{
+                  backgroundColor: tokens[tag.color_key],
+                  borderRadius: 6,
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
+                }}
+              >
+                <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 10.5, color: tokens.accentText }}>
+                  {tag.name}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    );
+  }
+
   return (
     <Screen scroll>
       <Stack.Screen options={{ headerShown: false }} />
@@ -318,481 +770,296 @@ export default function FinancasScreen() {
           </Text>
         ) : (
           <View style={{ gap: 16 }}>
-            <MonthNav monthDate={historyMonth} onChange={setHistoryMonth} />
+            <ModuleTabs tabs={TABS} active={activeTab} onChange={(key) => setActiveTab(key as TabKey)} />
 
-            <SummaryCard income={summary.income} expense={summary.expense} balance={summary.balance} />
+            {activeTab === "geral" ? (
+              <View style={{ gap: 16 }}>
+                {/* Lançamento rápido no topo — é a ação mais frequente do módulo, antes
+                    ficava lá embaixo da tela inteira. */}
+                {quickAddSection}
 
-            {activeAccounts.length > 0 ? (
-              <View
-                style={{
-                  backgroundColor: tokens.surface,
-                  borderColor: tokens.border,
-                  borderWidth: 1,
-                  borderRadius: 16,
-                  padding: 14,
-                  gap: 10,
-                }}
-              >
-                <Pressable
-                  onPress={() => router.push("/modulo/financas-contas")}
-                  style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
-                >
-                  <Text style={{ fontFamily: fontFamily.body, fontSize: 12.5, color: tokens.textMuted }}>
-                    Saldo em contas
-                  </Text>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.accent }}>
-                    Ver contas ›
-                  </Text>
-                </Pressable>
-                <Text
-                  style={{
-                    fontFamily: fontFamily.mono,
-                    fontSize: 24,
-                    color: totalAccountsBalance >= 0 ? tokens.text : tokens.danger,
-                  }}
-                >
-                  {formatCurrency(totalAccountsBalance)}
-                </Text>
-                <View style={{ gap: 8, marginTop: 4 }}>
-                  {activeAccounts.map((acc) => (
-                    <View key={acc.id} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                      <View
-                        style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: tokens[acc.color_key] }}
-                      />
-                      <Text
-                        style={{ flex: 1, minWidth: 0, fontFamily: fontFamily.body, fontSize: 13, color: tokens.text }}
-                        numberOfLines={1}
-                      >
-                        {acc.name}
+                <MonthNav monthDate={historyMonth} onChange={setHistoryMonth} />
+
+                <SummaryCard income={summary.income} expense={summary.expense} balance={summary.balance} />
+
+                {activeAccounts.length > 0 ? (
+                  <View
+                    style={{
+                      backgroundColor: tokens.surface,
+                      borderColor: tokens.border,
+                      borderWidth: 1,
+                      borderRadius: 16,
+                      padding: 14,
+                      gap: 10,
+                    }}
+                  >
+                    <Pressable
+                      onPress={() => router.push("/modulo/financas-contas")}
+                      style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
+                    >
+                      <Text style={{ fontFamily: fontFamily.body, fontSize: 12.5, color: tokens.textMuted }}>
+                        Saldo em contas
                       </Text>
-                      <Text
+                      <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.accent }}>
+                        Ver contas ›
+                      </Text>
+                    </Pressable>
+                    <Text
+                      style={{
+                        fontFamily: fontFamily.mono,
+                        fontSize: 24,
+                        color: totalAccountsBalance >= 0 ? tokens.text : tokens.danger,
+                      }}
+                    >
+                      {formatCurrency(totalAccountsBalance)}
+                    </Text>
+                    <View style={{ gap: 8, marginTop: 4 }}>
+                      {activeAccounts.map((acc) => (
+                        <View key={acc.id} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                          <View
+                            style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: tokens[acc.color_key] }}
+                          />
+                          <Text
+                            style={{ flex: 1, minWidth: 0, fontFamily: fontFamily.body, fontSize: 13, color: tokens.text }}
+                            numberOfLines={1}
+                          >
+                            {acc.name}
+                          </Text>
+                          <Text
+                            style={{
+                              fontFamily: fontFamily.mono,
+                              fontSize: 13,
+                              color: tokens.textMuted,
+                            }}
+                          >
+                            {formatCurrency(computeAccountBalance(acc, balanceRows))}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+
+                {rendaFixaCard}
+
+                <PendingAlerts bills={alertBills} saldoSeguro={saldoSeguro} budgetOverruns={budgetOverruns} />
+              </View>
+            ) : null}
+
+            {activeTab === "graficos" ? (
+              <View style={{ gap: 16 }}>
+                <MonthNav monthDate={historyMonth} onChange={setHistoryMonth} />
+
+                <StatCard
+                  label="Gastos essa semana"
+                  value={formatCurrency(weeklySpend.total)}
+                  deltaLabel={`${weeklySpend.deltaPct >= 0 ? "▲" : "▼"} ${Math.abs(Math.round(weeklySpend.deltaPct))}%`}
+                  deltaTone={weeklySpend.deltaPct > 0 ? "negative" : weeklySpend.deltaPct < 0 ? "positive" : "neutral"}
+                >
+                  <WeeklyBarChart data={weeklySpend.days} highlightIndex={weeklySpend.days.length - 1} />
+                </StatCard>
+
+                <CategoryBreakdown items={categoryBreakdown} />
+
+                <StatCard
+                  label="Fluxo de caixa — últimos 30 dias"
+                  value={formatCurrency(cashFlowEnd)}
+                  deltaTone={cashFlowEnd >= 0 ? "positive" : "negative"}
+                >
+                  <BalanceLineChart points={cashFlowSeries} />
+                </StatCard>
+              </View>
+            ) : null}
+
+            {activeTab === "historico" ? (
+              <View style={{ gap: 16 }}>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  {HISTORY_RANGES.map((r) => {
+                    const selected = historyRange === r.key;
+                    return (
+                      <Pressable
+                        key={r.key}
+                        onPress={() => setHistoryRange(r.key)}
                         style={{
-                          fontFamily: fontFamily.mono,
-                          fontSize: 13,
-                          color: tokens.textMuted,
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: 999,
+                          backgroundColor: selected ? tokens.accent : tokens.surfaceAlt,
                         }}
                       >
-                        {formatCurrency(computeAccountBalance(acc, balanceRows))}
-                      </Text>
-                    </View>
-                  ))}
+                        <Text
+                          style={{
+                            fontFamily: fontFamily.bodyMedium,
+                            fontSize: 12.5,
+                            color: selected ? tokens.accentText : tokens.textMuted,
+                          }}
+                        >
+                          {r.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <View style={{ gap: 12 }}>
+                  <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+                    {historyRange === "tudo"
+                      ? `Todo o histórico — busca os últimos ${TRANSACTION_HISTORY_LIMIT} lançamentos`
+                      : `Lançamentos dos últimos ${HISTORY_RANGES.find((r) => r.key === historyRange)?.label.toLowerCase()}`}
+                  </Text>
+
+                  <SearchInput
+                    value={historySearch}
+                    onChangeText={setHistorySearch}
+                    placeholder="Buscar por descrição ou categoria"
+                  />
+
+                  {filteredHistoryTransactions.length === 0 ? (
+                    <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                      {historySearchTerm.length > 0 ? "Nenhum lançamento encontrado." : "Nenhum lançamento nesse período."}
+                    </Text>
+                  ) : (
+                    historyGroups.map((group) => (
+                      <View key={group.date} style={{ gap: 8 }}>
+                        <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 12.5, color: tokens.textMuted }}>
+                          {formatHistoryGroupLabel(group.date)}
+                        </Text>
+                        <View style={{ gap: 8 }}>{group.items.map(renderTransactionRow)}</View>
+                      </View>
+                    ))
+                  )}
                 </View>
               </View>
             ) : null}
 
-            <View
-              style={{
-                backgroundColor: tokens.surface,
-                borderColor: tokens.border,
-                borderWidth: 1,
-                borderRadius: 16,
-                padding: 14,
-                flexDirection: "row",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: 12,
-              }}
-            >
-              <View style={{ flex: 1, gap: 2 }}>
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 12.5, color: tokens.textMuted }}>
-                  Renda fixa mensal
-                </Text>
-                {editingRendaFixa ? (
-                  <TextInput
-                    value={rendaFixaText}
-                    onChangeText={setRendaFixaText}
-                    placeholder="Ex: 2500,00"
-                    placeholderTextColor={tokens.textMuted}
-                    keyboardType="decimal-pad"
-                    autoFocus
-                    style={{
-                      fontFamily: fontFamily.mono,
-                      fontSize: 18,
-                      color: tokens.text,
-                      backgroundColor: tokens.surfaceAlt,
-                      borderRadius: 8,
-                      paddingHorizontal: 10,
-                      paddingVertical: 6,
-                      marginTop: 4,
-                    }}
-                  />
-                ) : (
-                  <Text style={{ fontFamily: fontFamily.mono, fontSize: 20, color: tokens.text, marginTop: 2 }}>
-                    {rendaFixa ? formatCurrency(Number(rendaFixa.replace(",", "."))) : "Não informado"}
-                  </Text>
-                )}
-              </View>
-              {editingRendaFixa ? (
-                <Pressable onPress={() => rendaFixaMutation.mutate(rendaFixaText)} disabled={rendaFixaMutation.isPending}>
-                  {rendaFixaMutation.isPending ? (
-                    <ActivityIndicator size="small" color={tokens.accent} />
-                  ) : (
-                    <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                      Salvar
+            {activeTab === "contas" ? (
+              <View style={{ gap: 12 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                      Contas a vencer
                     </Text>
-                  )}
-                </Pressable>
-              ) : (
-                <View style={{ alignItems: "flex-end", gap: 8 }}>
-                  {rendaFixa ? (
-                    rendaFixaEfetivada ? (
-                      // Já foi lançada este mês — esconde o botão em vez de deixar visível
-                      // pra sempre, que era o que deixava fácil tocar de novo sem querer e
-                      // duplicar a receita.
-                      <View
-                        style={{
-                          backgroundColor: tokens.successMuted,
-                          borderRadius: 8,
-                          paddingHorizontal: 10,
-                          paddingVertical: 6,
-                        }}
-                      >
-                        <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.success }}>
-                          Efetivada este mês
-                        </Text>
-                      </View>
-                    ) : (
-                      <Pressable
-                        onPress={() =>
-                          createTransactionMutation.mutate({
-                            kind: "income",
-                            category: RENDA_FIXA_CATEGORY,
-                            amount: Number(rendaFixa.replace(",", ".")),
-                            description: "Renda fixa mensal",
-                          })
-                        }
-                        disabled={createTransactionMutation.isPending}
-                        style={{
-                          backgroundColor: tokens.successMuted,
-                          borderRadius: 8,
-                          paddingHorizontal: 10,
-                          paddingVertical: 6,
-                          opacity: createTransactionMutation.isPending ? 0.6 : 1,
-                        }}
-                      >
-                        <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.success }}>
-                          Efetivado
-                        </Text>
-                      </Pressable>
-                    )
-                  ) : null}
-                  <Pressable
-                    onPress={() => {
-                      setRendaFixaText(rendaFixa ?? "");
-                      setEditingRendaFixa(true);
-                    }}
-                    hitSlop={8}
-                  >
+                  </View>
+                  <Pressable onPress={() => setOpenForm(openForm === "bill" ? "none" : "bill")}>
                     <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                      Editar
+                      {openForm === "bill" ? "Cancelar" : "+ Nova conta"}
                     </Text>
                   </Pressable>
                 </View>
-              )}
-            </View>
 
-            <PendingAlerts bills={alertBills} saldoSeguro={saldoSeguro} />
-
-            <StatCard
-              label="Gastos essa semana"
-              value={formatCurrency(weeklySpend.total)}
-              deltaLabel={`${weeklySpend.deltaPct >= 0 ? "▲" : "▼"} ${Math.abs(Math.round(weeklySpend.deltaPct))}%`}
-              deltaTone={weeklySpend.deltaPct > 0 ? "negative" : weeklySpend.deltaPct < 0 ? "positive" : "neutral"}
-            >
-              <WeeklyBarChart data={weeklySpend.days} highlightIndex={weeklySpend.days.length - 1} />
-            </StatCard>
-
-            <CategoryBreakdown items={categoryBreakdown} />
-
-            <StatCard
-              label="Fluxo de caixa — últimos 30 dias"
-              value={formatCurrency(cashFlowEnd)}
-              deltaTone={cashFlowEnd >= 0 ? "positive" : "negative"}
-            >
-              <BalanceLineChart points={cashFlowSeries} />
-            </StatCard>
-
-            <View style={{ gap: 12 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                    Contas a vencer
-                  </Text>
-                </View>
-                <Pressable onPress={() => setOpenForm(openForm === "bill" ? "none" : "bill")}>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                    {openForm === "bill" ? "Cancelar" : "+ Nova conta"}
-                  </Text>
-                </Pressable>
-              </View>
-
-              {openForm === "bill" ? (
-                <NewBillForm
-                  isSaving={createBillMutation.isPending}
-                  onCancel={() => setOpenForm("none")}
-                  onSubmit={(input) => createBillMutation.mutate(input)}
-                />
-              ) : null}
-
-              {gastosFixos.length > 0 ? (
-                <View style={{ gap: 8 }}>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
-                    Gastos fixos (recorrentes)
-                  </Text>
-                  {gastosFixos.map((bill) => (
-                    <BillRow
-                      key={bill.id}
-                      bill={bill}
-                      accounts={activeAccounts}
-                      isSaving={savingBillId === bill.id}
-                      onMarkPaid={(paidAmount, accountId) => markPaidMutation.mutate({ bill, paidAmount, accountId })}
-                      onDelete={() => deleteBillMutation.mutate(bill.id)}
-                      isEditing={editingBillId === bill.id}
-                      onStartEdit={() => setEditingBillId(bill.id)}
-                      onCancelEdit={() => setEditingBillId(null)}
-                      onUpdate={(input) => updateBillMutation.mutate({ id: bill.id, input })}
-                      isUpdating={updateBillMutation.isPending && editingBillId === bill.id}
-                    />
-                  ))}
-                </View>
-              ) : null}
-
-              {outrasContas.length > 0 ? (
-                <View style={{ gap: 8 }}>
-                  {gastosFixos.length > 0 ? (
-                    <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
-                      Outras contas
-                    </Text>
-                  ) : null}
-                  {outrasContas.map((bill) => (
-                    <BillRow
-                      key={bill.id}
-                      bill={bill}
-                      accounts={activeAccounts}
-                      isSaving={savingBillId === bill.id}
-                      onMarkPaid={(paidAmount, accountId) => markPaidMutation.mutate({ bill, paidAmount, accountId })}
-                      onDelete={() => deleteBillMutation.mutate(bill.id)}
-                      isEditing={editingBillId === bill.id}
-                      onStartEdit={() => setEditingBillId(bill.id)}
-                      onCancelEdit={() => setEditingBillId(null)}
-                      onUpdate={(input) => updateBillMutation.mutate({ id: bill.id, input })}
-                      isUpdating={updateBillMutation.isPending && editingBillId === bill.id}
-                    />
-                  ))}
-                </View>
-              ) : null}
-
-              {bills.length === 0 && openForm !== "bill" ? (
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  Nenhuma conta cadastrada. Marque "Conta recorrente" ao criar pra ela entrar em Gastos fixos.
-                </Text>
-              ) : null}
-            </View>
-
-            <View style={{ gap: 12 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                    Lançar despesa/receita
-                  </Text>
-                  <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
-                    {isCurrentHistoryMonth
-                      ? `Mês atual — busca os últimos ${TRANSACTION_HISTORY_LIMIT} lançamentos de qualquer mês`
-                      : "Lançamentos do mês selecionado acima — pode não aparecer tudo se for um mês bem antigo"}
-                  </Text>
-                </View>
-                <Pressable onPress={() => setOpenForm(openForm === "transaction" ? "none" : "transaction")}>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                    {openForm === "transaction" ? "Cancelar" : "+ Adicionar"}
-                  </Text>
-                </Pressable>
-              </View>
-
-              {openForm === "transaction" ? (
-                <NewTransactionForm
-                  isSaving={createTransactionMutation.isPending}
-                  onCancel={() => setOpenForm("none")}
-                  onSubmit={(input) => createTransactionMutation.mutate(input)}
-                  allCategories={allCategories}
-                  accounts={activeAccounts}
-                  cards={activeCards}
-                  tags={tags}
-                  recentDescriptions={recentDescriptions}
-                />
-              ) : null}
-
-              {transactionsInHistoryMonth.length === 0 && openForm !== "transaction" ? (
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  {isCurrentHistoryMonth ? "Nenhum lançamento ainda." : "Nenhum lançamento nesse mês."}
-                </Text>
-              ) : (
-                transactionsInHistoryMonth.map((t) => {
-                  const account = activeAccounts.find((a) => a.id === t.account_id);
-                  const card = activeCards.find((c) => c.id === t.card_id);
-                  const transactionTags = tags.filter((tag) => t.tagIds.includes(tag.id));
-                  return editingTransactionId === t.id && t.kind === "transfer" ? (
-                    // Transferência usa o mesmo `TransferForm` do
-                    // cadastro (com conta de origem/destino), não o formulário rápido de
-                    // despesa/receita, que não tem esses campos.
-                    <TransferForm
-                      key={t.id}
-                      initial={{
-                        fromAccountId: t.account_id ?? "",
-                        toAccountId: t.transfer_to_account_id ?? "",
-                        amount: t.amount,
-                        description: t.description ?? "",
-                      }}
-                      submitLabel="Salvar alterações"
-                      accounts={activeAccounts}
-                      isSaving={updateTransferMutation.isPending}
-                      onCancel={() => setEditingTransactionId(null)}
-                      onSubmit={(input) => updateTransferMutation.mutate({ id: t.id, input })}
-                    />
-                  ) : editingTransactionId === t.id ? (
-                    <NewTransactionForm
-                      key={t.id}
-                      initial={{
-                        kind: t.kind,
-                        category: t.category,
-                        amount: t.amount,
-                        description: t.description ?? "",
-                        accountId: t.account_id,
-                        cardId: t.card_id,
-                        tagIds: t.tagIds,
-                      }}
-                      submitLabel="Salvar alterações"
-                      isSaving={updateTransactionMutation.isPending}
-                      onCancel={() => setEditingTransactionId(null)}
-                      onSubmit={(input) => updateTransactionMutation.mutate({ id: t.id, input })}
-                      allCategories={allCategories}
-                      accounts={activeAccounts}
-                      cards={activeCards}
-                      tags={tags}
-                      recentDescriptions={recentDescriptions}
-                    />
-                  ) : (
-                    <View
-                      key={t.id}
-                      style={{
-                        backgroundColor: tokens.surface,
-                        borderColor: tokens.border,
-                        borderWidth: 1,
-                        borderRadius: 14,
-                        padding: 14,
-                        gap: 8,
-                      }}
-                    >
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                        <View
-                          style={{
-                            width: 36,
-                            height: 36,
-                            borderRadius: 18,
-                            backgroundColor: tokens.surfaceAlt,
-                            alignItems: "center",
-                            justifyContent: "center",
-                          }}
-                        >
-                          <Text style={{ fontSize: 16 }}>{t.kind === "transfer" ? "🔁" : categoryEmoji(t.category)}</Text>
-                        </View>
-                        <View style={{ flex: 1, gap: 2 }}>
-                          <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.text }}>
-                            {t.description || t.category}
-                          </Text>
-                          <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
-                            {t.category} · {formatHistoryDate(t.occurred_at)}
-                            {account ? ` · ${account.name}` : ""}
-                            {card ? ` · 💳 ${card.name}` : ""}
-                          </Text>
-                        </View>
-                        <Text
-                          style={{
-                            fontFamily: fontFamily.bodySemibold,
-                            fontSize: 14,
-                            color: t.kind === "income" ? tokens.success : t.kind === "transfer" ? tokens.textMuted : tokens.danger,
-                          }}
-                        >
-                          {t.kind === "income" ? "+" : t.kind === "transfer" ? "" : "-"}
-                          {formatCurrency(t.amount)}
-                        </Text>
-                        <Pressable onPress={() => setEditingTransactionId(t.id)} hitSlop={8}>
-                          <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.accent }}>
-                            Editar
-                          </Text>
-                        </Pressable>
-                        <Pressable onPress={() => deleteTransactionMutation.mutate(t.id)} hitSlop={8}>
-                          <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                            ✕
-                          </Text>
-                        </Pressable>
-                      </View>
-                      {transactionTags.length > 0 ? (
-                        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                          {transactionTags.map((tag) => (
-                            <View
-                              key={tag.id}
-                              style={{
-                                backgroundColor: tokens[tag.color_key],
-                                borderRadius: 6,
-                                paddingHorizontal: 8,
-                                paddingVertical: 3,
-                              }}
-                            >
-                              <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 10.5, color: tokens.accentText }}>
-                                {tag.name}
-                              </Text>
-                            </View>
-                          ))}
-                        </View>
-                      ) : null}
-                    </View>
-                  );
-                })
-              )}
-            </View>
-
-            {/* Investimentos é o bloco menos usado do módulo — fica por último de propósito. */}
-            <View style={{ gap: 12 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
-                    Investimentos
-                  </Text>
-                  <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
-                    Total investido: {formatCurrency(investedTotal)}
-                  </Text>
-                </View>
-                <Pressable onPress={() => setOpenForm(openForm === "investment" ? "none" : "investment")}>
-                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
-                    {openForm === "investment" ? "Cancelar" : "+ Novo investimento"}
-                  </Text>
-                </Pressable>
-              </View>
-
-              {openForm === "investment" ? (
-                <NewInvestmentForm
-                  isSaving={createInvestmentMutation.isPending}
-                  onCancel={() => setOpenForm("none")}
-                  onSubmit={(input) => createInvestmentMutation.mutate(input)}
-                />
-              ) : null}
-
-              {investments.length === 0 && openForm !== "investment" ? (
-                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
-                  Nenhum investimento cadastrado.
-                </Text>
-              ) : (
-                investments.map((investment) => (
-                  <InvestmentRow
-                    key={investment.id}
-                    investment={investment}
-                    isSaving={savingInvestmentId === investment.id}
-                    onUpdate={(input) => updateInvestmentMutation.mutate({ id: investment.id, input })}
-                    onDelete={() => deleteInvestmentMutation.mutate(investment.id)}
+                {openForm === "bill" ? (
+                  <NewBillForm
+                    isSaving={createBillMutation.isPending}
+                    onCancel={() => setOpenForm("none")}
+                    onSubmit={(input) => createBillMutation.mutate(input)}
                   />
-                ))
-              )}
-            </View>
+                ) : null}
+
+                {gastosFixos.length > 0 ? (
+                  <View style={{ gap: 8 }}>
+                    <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
+                      Gastos fixos (recorrentes)
+                    </Text>
+                    {gastosFixos.map((bill) => (
+                      <BillRow
+                        key={bill.id}
+                        bill={bill}
+                        accounts={activeAccounts}
+                        isSaving={savingBillId === bill.id}
+                        onMarkPaid={(paidAmount, accountId) => markPaidMutation.mutate({ bill, paidAmount, accountId })}
+                        onDelete={() => deleteBillMutation.mutate(bill.id)}
+                        isEditing={editingBillId === bill.id}
+                        onStartEdit={() => setEditingBillId(bill.id)}
+                        onCancelEdit={() => setEditingBillId(null)}
+                        onUpdate={(input) => updateBillMutation.mutate({ id: bill.id, input })}
+                        isUpdating={updateBillMutation.isPending && editingBillId === bill.id}
+                      />
+                    ))}
+                  </View>
+                ) : null}
+
+                {outrasContas.length > 0 ? (
+                  <View style={{ gap: 8 }}>
+                    {gastosFixos.length > 0 ? (
+                      <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
+                        Outras contas
+                      </Text>
+                    ) : null}
+                    {outrasContas.map((bill) => (
+                      <BillRow
+                        key={bill.id}
+                        bill={bill}
+                        accounts={activeAccounts}
+                        isSaving={savingBillId === bill.id}
+                        onMarkPaid={(paidAmount, accountId) => markPaidMutation.mutate({ bill, paidAmount, accountId })}
+                        onDelete={() => deleteBillMutation.mutate(bill.id)}
+                        isEditing={editingBillId === bill.id}
+                        onStartEdit={() => setEditingBillId(bill.id)}
+                        onCancelEdit={() => setEditingBillId(null)}
+                        onUpdate={(input) => updateBillMutation.mutate({ id: bill.id, input })}
+                        isUpdating={updateBillMutation.isPending && editingBillId === bill.id}
+                      />
+                    ))}
+                  </View>
+                ) : null}
+
+                {bills.length === 0 && openForm !== "bill" ? (
+                  <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                    Nenhuma conta cadastrada. Marque "Conta recorrente" ao criar pra ela entrar em Gastos fixos.
+                  </Text>
+                ) : null}
+
+                <Pressable onPress={() => router.push("/modulo/financas-cartao")} hitSlop={8}>
+                  <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                    Assinaturas fixas no cartão de crédito ficam em Finanças › Cartão ›
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {activeTab === "investimentos" ? (
+              <View style={{ gap: 12 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontFamily: fontFamily.bodySemibold, fontSize: 16, color: tokens.text }}>
+                      Investimentos
+                    </Text>
+                    <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+                      Total investido: {formatCurrency(investedTotal)}
+                    </Text>
+                  </View>
+                  <Pressable onPress={() => setOpenForm(openForm === "investment" ? "none" : "investment")}>
+                    <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
+                      {openForm === "investment" ? "Cancelar" : "+ Novo investimento"}
+                    </Text>
+                  </Pressable>
+                </View>
+
+                {openForm === "investment" ? (
+                  <NewInvestmentForm
+                    isSaving={createInvestmentMutation.isPending}
+                    onCancel={() => setOpenForm("none")}
+                    onSubmit={(input) => createInvestmentMutation.mutate(input)}
+                  />
+                ) : null}
+
+                {investments.length === 0 && openForm !== "investment" ? (
+                  <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                    Nenhum investimento cadastrado.
+                  </Text>
+                ) : (
+                  investments.map((investment) => (
+                    <InvestmentRow
+                      key={investment.id}
+                      investment={investment}
+                      isSaving={savingInvestmentId === investment.id}
+                      onUpdate={(input) => updateInvestmentMutation.mutate({ id: investment.id, input })}
+                      onDelete={() => deleteInvestmentMutation.mutate(investment.id)}
+                    />
+                  ))
+                )}
+              </View>
+            ) : null}
           </View>
         )}
       </View>

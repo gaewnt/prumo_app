@@ -3,6 +3,7 @@ import { Text, View, Pressable, ActivityIndicator } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Screen } from "@/components/ui/screen";
+import { SearchInput } from "@/components/ui/search-input";
 import { CareerGoalCard } from "@/components/carreira/career-goal-card";
 import { NewCareerGoalForm } from "@/components/carreira/new-career-goal-form";
 import { CourseRow } from "@/components/carreira/course-row";
@@ -55,6 +56,19 @@ export default function CarreiraScreen() {
   const deadlines = query.data?.deadlines ?? [];
   const pendingDeadlines = deadlines.filter((d) => !d.done);
   const doneDeadlines = deadlines.filter((d) => d.done);
+
+  // Busca nos cursos — a lista de cursos/certificados só cresce com o tempo.
+  const [courseSearch, setCourseSearch] = useState("");
+  const courseSearchTerm = courseSearch.trim().toLowerCase();
+  const filteredCourses =
+    courseSearchTerm.length === 0
+      ? courses
+      : courses.filter(
+          (c) =>
+            c.title.toLowerCase().includes(courseSearchTerm) ||
+            (c.institution ?? "").toLowerCase().includes(courseSearchTerm) ||
+            (c.notes ?? "").toLowerCase().includes(courseSearchTerm)
+        );
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ["carreira", userId] });
@@ -201,7 +215,21 @@ export default function CarreiraScreen() {
                 </Text>
               ) : null}
 
-              {courses.map((course) => (
+              {courses.length > 5 ? (
+                <SearchInput
+                  value={courseSearch}
+                  onChangeText={setCourseSearch}
+                  placeholder="Buscar por curso ou instituição"
+                />
+              ) : null}
+
+              {courses.length > 0 && courseSearchTerm.length > 0 && filteredCourses.length === 0 ? (
+                <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+                  Nenhum curso encontrado.
+                </Text>
+              ) : null}
+
+              {filteredCourses.map((course) => (
                 <CourseRow
                   key={course.id}
                   course={course}

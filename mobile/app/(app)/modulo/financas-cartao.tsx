@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Text, View, Pressable, ActivityIndicator } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -18,6 +18,12 @@ import {
   deleteCard,
   payCardCycle,
   createTransaction,
+  createRecurringCharge,
+  updateRecurringCharge,
+  setRecurringChargeActive,
+  deleteRecurringCharge,
+  ensureCardRecurringChargesGenerated,
+  type CreditCardRecurringCharge,
 } from "@/lib/financas";
 
 type OpenForm = "none" | "card";
@@ -34,6 +40,11 @@ export default function FinancasCartaoScreen() {
   const [payingCardId, setPayingCardId] = useState<string | null>(null);
   // Atalho "+ Lançar despesa nessa fatura" direto na tela do cartão.
   const [chargingCardId, setChargingCardId] = useState<string | null>(null);
+  // Lançamentos fixos (assinaturas) no cartão.
+  const [addingRecurringChargeCardId, setAddingRecurringChargeCardId] = useState<string | null>(null);
+  const [editingRecurringChargeId, setEditingRecurringChargeId] = useState<string | null>(null);
+  const [togglingRecurringChargeId, setTogglingRecurringChargeId] = useState<string | null>(null);
+  const [deletingRecurringChargeId, setDeletingRecurringChargeId] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ["financas-extras", userId],
@@ -54,12 +65,34 @@ export default function FinancasCartaoScreen() {
   const accounts = (query.data?.accounts ?? []).filter((a) => !a.archived);
   const balanceRows = query.data?.balanceRows ?? [];
   const payments = query.data?.cardPayments ?? [];
+  const recurringCharges = query.data?.recurringCharges ?? [];
   const activeCards = cards.filter((c) => !c.archived);
   const archivedCards = cards.filter((c) => c.archived);
 
   function invalidateExtras() {
     queryClient.invalidateQueries({ queryKey: ["financas-extras", userId] });
   }
+
+  // Gera sozinho, ao abrir a tela, os lançamentos fixos ainda não gerados no ciclo aberto de
+  // cada cartão (ver `ensureCardRecurringChargesGenerated`) — é isso que faz a assinatura
+  // cair na fatura sem a pessoa precisar relançar todo mês. `hasGenerated` trava contra rodar
+  // de novo a cada refetch/invalidate (ex: depois de pagar uma fatura), já que os dados
+  // recém-buscados sempre disparam esse efeito de novo.
+  const hasGeneratedRef = useRef(false);
+  useEffect(() => {
+    if (!userId || !query.data || hasGeneratedRef.current) return;
+    hasGeneratedRef.current = true;
+    ensureCardRecurringChargesGenerated(userId, query.data.cards, query.data.recurringCharges, query.data.balanceRows)
+      .then((count) => {
+        if (count > 0) invalidateExtras();
+      })
+      .catch(() => {
+        // Falha silenciosa — a próxima abertura da tela tenta gerar de novo, e
+        // `hasGeneratedRef` volta a `false` num novo mount do componente.
+        hasGeneratedRef.current = false;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, query.data]);
 
   const createCardMutation = useMutation({
     mutationFn: (input: Parameters<typeof createCard>[1]) => createCard(userId!, input),
@@ -122,6 +155,41 @@ export default function FinancasCartaoScreen() {
     },
   });
 
+  const createRecurringChargeMutation = useMutation({
+    mutationFn: (input: Parameters<typeof createRecurringCharge>[1]) => createRecurringCharge(userId!, input),
+    onSuccess: () => {
+      setAddingRecurringChargeCardId(null);
+      invalidateExtras();
+    },
+  });
+
+  const updateRecurringChargeMutation = useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Parameters<typeof updateRecurringCharge>[1] }) =>
+      updateRecurringCharge(id, input),
+    onSuccess: () => {
+      setEditingRecurringChargeId(null);
+      invalidateExtras();
+    },
+  });
+
+  const toggleRecurringChargeMutation = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean }) => setRecurringChargeActive(id, active),
+    onMutate: ({ id }) => setTogglingRecurringChargeId(id),
+    onSettled: () => {
+      setTogglingRecurringChargeId(null);
+      invalidateExtras();
+    },
+  });
+
+  const deleteRecurringChargeMutation = useMutation({
+    mutationFn: (id: string) => deleteRecurringCharge(id),
+    onMutate: (id) => setDeletingRecurringChargeId(id),
+    onSettled: () => {
+      setDeletingRecurringChargeId(null);
+      invalidateExtras();
+    },
+  });
+
   function renderCard(card: (typeof cards)[number]) {
     return (
       <CardRow
@@ -147,6 +215,27 @@ export default function FinancasCartaoScreen() {
         onCancelCharge={() => setChargingCardId(null)}
         onLogCharge={(input) => logChargeMutation.mutate(input)}
         isLoggingCharge={chargingCardId === card.id && logChargeMutation.isPending}
+        recurringCharges={recurringCharges}
+        isAddingRecurringCharge={addingRecurringChargeCardId === card.id}
+        onStartAddRecurringCharge={() => setAddingRecurringChargeCardId(card.id)}
+        onCancelAddRecurringCharge={() => setAddingRecurringChargeCardId(null)}
+        onCreateRecurringCharge={(input) =>
+          createRecurringChargeMutation.mutate({ cardId: card.id, ...input })
+        }
+        isCreatingRecurringCharge={
+          addingRecurringChargeCardId === card.id && createRecurringChargeMutation.isPending
+        }
+        editingRecurringChargeId={editingRecurringChargeId}
+        onStartEditRecurringCharge={(id) => setEditingRecurringChargeId(id)}
+        onCancelEditRecurringCharge={() => setEditingRecurringChargeId(null)}
+        onUpdateRecurringCharge={(id, input) => updateRecurringChargeMutation.mutate({ id, input })}
+        isUpdatingRecurringCharge={updateRecurringChargeMutation.isPending}
+        onToggleRecurringChargeActive={(charge: CreditCardRecurringCharge) =>
+          toggleRecurringChargeMutation.mutate({ id: charge.id, active: !charge.active })
+        }
+        togglingRecurringChargeId={togglingRecurringChargeId}
+        onDeleteRecurringCharge={(id) => deleteRecurringChargeMutation.mutate(id)}
+        deletingRecurringChargeId={deletingRecurringChargeId}
       />
     );
   }

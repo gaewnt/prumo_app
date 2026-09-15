@@ -10,6 +10,7 @@ import { useAuthStore } from "@/lib/store/auth-store";
 import { modules } from "@/lib/modules";
 import { fetchAllModulePreferences, setModuleHidden, fetchModulePreference, updateModulePreferenceField } from "@/lib/onboarding";
 import { biometricLockSupported, isBiometricAvailable } from "@/lib/biometric-lock";
+import { getVerifiedTotpFactor } from "@/lib/mfa";
 
 function SectionLabel({ children }: { children: string }) {
   const { tokens } = useTheme();
@@ -104,6 +105,12 @@ export default function ConfiguracoesScreen() {
     enabled: !!userId,
   });
   const bloqueioAtivo = !!appPrefsQuery.data?.biometric_lock_enabled;
+  const mfaFactorQuery = useQuery({
+    queryKey: ["mfa-factor", userId],
+    queryFn: getVerifiedTotpFactor,
+    enabled: !!userId,
+  });
+  const mfaAtiva = !!mfaFactorQuery.data;
   const lembreteAtivo = !!appPrefsQuery.data?.lembrete_diario_id;
   const lembreteHora = (appPrefsQuery.data?.lembrete_diario_hora as string | undefined) ?? "20:00";
 
@@ -200,11 +207,11 @@ export default function ConfiguracoesScreen() {
           <SectionLabel>Alertas e notificações</SectionLabel>
           <Card>
             <CardRow
-              label="Lembrete diário de lançamento"
+              label="Lembretes de registro e bem-estar"
               onPress={() => router.push("/perfil")}
               right={
                 <Text style={{ fontFamily: fontFamily.body, fontSize: 12.5, color: tokens.textMuted }}>
-                  {lembreteAtivo ? `Ativado · ${lembreteHora}` : "Desativado"}
+                  {lembreteAtivo ? "Ativado" : "Desativado"}
                 </Text>
               }
               isFirst
@@ -252,6 +259,22 @@ export default function ConfiguracoesScreen() {
               )}
             </View>
           </Card>
+          <Card>
+            <CardRow
+              label="Verificação em duas etapas"
+              onPress={() => router.push("/verificacao-duas-etapas")}
+              right={
+                <Text style={{ fontFamily: fontFamily.body, fontSize: 12.5, color: tokens.textMuted }}>
+                  {mfaAtiva ? "Ativada" : "Desativada"}
+                </Text>
+              }
+              isFirst
+            />
+          </Card>
+          <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+            Pede um código de app autenticador (Google Authenticator, Authy etc.) além da
+            senha pra entrar na conta — protege mesmo que alguém descubra sua senha.
+          </Text>
           <Card>
             <Pressable onPress={signOut} style={{ padding: 14 }}>
               <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 14, color: tokens.danger }}>

@@ -11,6 +11,8 @@ export type CardFormInput = {
   closingDay: number;
   dueDay: number;
   colorKey: CategoryColorKey;
+  /** Só relevante ao criar (ver `NewCardForm` — some do formulário na edição). */
+  currentInvoiceAmount?: number | null;
 };
 
 type NewCardFormProps = {
@@ -45,6 +47,7 @@ export function NewCardForm({
   const [closingDayText, setClosingDayText] = useState(initial ? String(initial.closingDay) : "");
   const [dueDayText, setDueDayText] = useState(initial ? String(initial.dueDay) : "");
   const [colorKey, setColorKey] = useState<CategoryColorKey>(initial?.colorKey ?? "accent");
+  const [invoiceText, setInvoiceText] = useState("");
 
   const closingDay = parseDay(closingDayText);
   const dueDay = parseDay(dueDayText);
@@ -53,12 +56,14 @@ export function NewCardForm({
   function handleSubmit() {
     if (!isValid) return;
     const parsedLimit = Number(limitText.replace(",", "."));
+    const parsedInvoice = Number(invoiceText.replace(",", "."));
     onSubmit({
       name: name.trim(),
       cardLimit: limitText.trim() && Number.isFinite(parsedLimit) ? parsedLimit : null,
       closingDay: closingDay!,
       dueDay: dueDay!,
       colorKey,
+      currentInvoiceAmount: invoiceText.trim() && Number.isFinite(parsedInvoice) ? parsedInvoice : null,
     });
   }
 
@@ -105,6 +110,31 @@ export function NewCardForm({
           paddingVertical: 12,
         }}
       />
+
+      {!initial ? (
+        <View style={{ gap: 4 }}>
+          <TextInput
+            value={invoiceText}
+            onChangeText={setInvoiceText}
+            placeholder="Fatura atual, se já tiver alguma (opcional)"
+            placeholderTextColor={tokens.textMuted}
+            keyboardType="decimal-pad"
+            style={{
+              fontFamily: fontFamily.body,
+              fontSize: 15,
+              color: tokens.text,
+              backgroundColor: tokens.surfaceAlt,
+              borderRadius: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 12,
+            }}
+          />
+          <Text style={{ fontFamily: fontFamily.body, fontSize: 11.5, color: tokens.textMuted }}>
+            Pra cartão que já vinha sendo usado antes do Prumo — entra como um lançamento na
+            fatura aberta, editável depois igual qualquer outro.
+          </Text>
+        </View>
+      ) : null}
 
       <View style={{ flexDirection: "row", gap: 8 }}>
         <View style={{ flex: 1, gap: 4 }}>

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Text, View, Pressable, ActivityIndicator } from "react-native";
+import { Text, TextInput, View, Pressable, ActivityIndicator } from "react-native";
 import { useTheme } from "@/lib/theme/theme-provider";
 import { fontFamily } from "@/lib/theme/tokens";
 import {
@@ -11,6 +11,7 @@ import {
   type CategoryColorKey,
   type CreditCard,
   type CreditCardPayment,
+  type CreditCardRecurringCharge,
   type FinancialAccount,
   type FinancialTag,
   type BalanceRow,
@@ -18,11 +19,16 @@ import {
 } from "@/lib/financas";
 import { NewCardForm, type CardFormInput } from "@/components/financas/new-card-form";
 import { NewTransactionForm } from "@/components/financas/new-transaction-form";
+import { NewRecurringChargeForm, type RecurringChargeFormInput } from "@/components/financas/new-recurring-charge-form";
+import { RecurringChargeRow } from "@/components/financas/recurring-charge-row";
 
 type PayCycleInput = {
   cycleStart: string;
   cycleEnd: string;
   amount: number;
+  /** Total calculado do ciclo (soma dos lançamentos) — guardado à parte do valor
+   * realmente pago, pra dar pra mostrar divergência depois (ver `payCardCycle`). */
+  expectedAmount: number;
   paidFromAccountId: string;
 };
 
@@ -60,6 +66,23 @@ type CardRowProps = {
   onCancelCharge: () => void;
   onLogCharge: (input: ChargeInput) => void;
   isLoggingCharge: boolean;
+  /** Lançamentos fixos (assinaturas) de TODOS os cartões — a linha filtra os do próprio
+   * cartão. Vem de `fetchFinancasExtras`, mesmo padrão de `payments`/`balanceRows`. */
+  recurringCharges: CreditCardRecurringCharge[];
+  isAddingRecurringCharge: boolean;
+  onStartAddRecurringCharge: () => void;
+  onCancelAddRecurringCharge: () => void;
+  onCreateRecurringCharge: (input: RecurringChargeFormInput) => void;
+  isCreatingRecurringCharge: boolean;
+  editingRecurringChargeId: string | null;
+  onStartEditRecurringCharge: (id: string) => void;
+  onCancelEditRecurringCharge: () => void;
+  onUpdateRecurringCharge: (id: string, input: RecurringChargeFormInput) => void;
+  isUpdatingRecurringCharge: boolean;
+  onToggleRecurringChargeActive: (charge: CreditCardRecurringCharge) => void;
+  togglingRecurringChargeId: string | null;
+  onDeleteRecurringCharge: (id: string) => void;
+  deletingRecurringChargeId: string | null;
 };
 
 export function CardRow({
@@ -84,6 +107,21 @@ export function CardRow({
   onCancelCharge,
   onLogCharge,
   isLoggingCharge,
+  recurringCharges,
+  isAddingRecurringCharge,
+  onStartAddRecurringCharge,
+  onCancelAddRecurringCharge,
+  onCreateRecurringCharge,
+  isCreatingRecurringCharge,
+  editingRecurringChargeId,
+  onStartEditRecurringCharge,
+  onCancelEditRecurringCharge,
+  onUpdateRecurringCharge,
+  isUpdatingRecurringCharge,
+  onToggleRecurringChargeActive,
+  togglingRecurringChargeId,
+  onDeleteRecurringCharge,
+  deletingRecurringChargeId,
 }: CardRowProps) {
   const { tokens } = useTheme();
   const [payingCycleEnd, setPayingCycleEnd] = useState<string | null>(null);
@@ -94,6 +132,10 @@ export function CardRow({
   // passaria, e aqui existe uma trava de banco (unique card_id+cycle_end) mas a UI
   // não deve depender dela pra evitar o duplo lançamento de despesa.
   const [hasSubmittedPayment, setHasSubmittedPayment] = useState(false);
+  // Valor a pagar editável — antes sempre mandava `cycle.total` sem chance de ajustar; agora
+  // segue o mesmo padrão de `bill-row.tsx` (pré-preenchido com o previsto, mas ajustável em
+  // caso de divergência, ex: anuidade que ainda não caiu no extrato).
+  const [paidAmountText, setPaidAmountText] = useState("");
 
   if (isEditing) {
     return (
@@ -113,10 +155,11 @@ export function CardRow({
     );
   }
 
-  function startPaying(cycleEnd: string) {
-    setPayingCycleEnd(cycleEnd);
+  function startPaying(cycle: { end: string; total: number }) {
+    setPayingCycleEnd(cycle.end);
     setSelectedAccountId(null);
     setHasSubmittedPayment(false);
+    setPaidAmountText(String(cycle.total).replace(".", ","));
   }
 
   function cancelPaying() {
@@ -125,13 +168,16 @@ export function CardRow({
     setHasSubmittedPayment(false);
   }
 
+  const parsedPaidAmount = Number(paidAmountText.replace(",", "."));
+
   function confirmPaying(cycle: { start: string; end: string; total: number }) {
-    if (hasSubmittedPayment || !selectedAccountId) return;
+    if (hasSubmittedPayment || !selectedAccountId || !(parsedPaidAmount > 0)) return;
     setHasSubmittedPayment(true);
     onPayCycle({
       cycleStart: cycle.start,
       cycleEnd: cycle.end,
-      amount: cycle.total,
+      amount: parsedPaidAmount,
+      expectedAmount: cycle.total,
       paidFromAccountId: selectedAccountId,
     });
     setPayingCycleEnd(null);
@@ -140,6 +186,7 @@ export function CardRow({
   const openCycle = currentCardCycle(card.closing_day);
   const openTotal = computeCardCycleTotal(card.id, openCycle.start, openCycle.end, balanceRows);
   const closed = closedUnpaidCycles(card, balanceRows, payments);
+  const cardRecurringCharges = recurringCharges.filter((c) => c.card_id === card.id);
 
   const colorKey: CategoryColorKey = card.color_key;
 
@@ -214,6 +261,53 @@ export function CardRow({
       </View>
 
       <View style={{ gap: 8 }}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
+            Lançamentos fixos
+          </Text>
+          {!isAddingRecurringCharge ? (
+            <Pressable onPress={onStartAddRecurringCharge} hitSlop={8}>
+              <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 12.5, color: tokens.accent }}>
+                + Novo
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        {isAddingRecurringCharge ? (
+          <NewRecurringChargeForm
+            isSaving={isCreatingRecurringCharge}
+            onCancel={onCancelAddRecurringCharge}
+            onSubmit={onCreateRecurringCharge}
+            allCategories={allCategories}
+          />
+        ) : null}
+
+        {cardRecurringCharges.length === 0 && !isAddingRecurringCharge ? (
+          <Text style={{ fontFamily: fontFamily.body, fontSize: 13, color: tokens.textMuted }}>
+            Nenhuma assinatura cadastrada nesse cartão.
+          </Text>
+        ) : (
+          cardRecurringCharges.map((charge) => (
+            <RecurringChargeRow
+              key={charge.id}
+              charge={charge}
+              allCategories={allCategories}
+              isEditing={editingRecurringChargeId === charge.id}
+              onStartEdit={() => onStartEditRecurringCharge(charge.id)}
+              onCancelEdit={onCancelEditRecurringCharge}
+              onUpdate={(input) => onUpdateRecurringCharge(charge.id, input)}
+              isUpdating={isUpdatingRecurringCharge && editingRecurringChargeId === charge.id}
+              onToggleActive={() => onToggleRecurringChargeActive(charge)}
+              isTogglingActive={togglingRecurringChargeId === charge.id}
+              onDelete={() => onDeleteRecurringCharge(charge.id)}
+              isDeleting={deletingRecurringChargeId === charge.id}
+            />
+          ))
+        )}
+      </View>
+
+      <View style={{ gap: 8 }}>
         <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.textMuted }}>
           Faturas fechadas
         </Text>
@@ -251,7 +345,7 @@ export function CardRow({
                       Cadastre uma conta pra poder pagar
                     </Text>
                   ) : !isPayingThis ? (
-                    <Pressable onPress={() => startPaying(cycle.end)} hitSlop={8}>
+                    <Pressable onPress={() => startPaying(cycle)} hitSlop={8}>
                       <Text style={{ fontFamily: fontFamily.bodyMedium, fontSize: 13, color: tokens.accent }}>
                         Pagar
                       </Text>
@@ -300,6 +394,24 @@ export function CardRow({
                         );
                       })}
                     </View>
+                    <Text style={{ fontFamily: fontFamily.body, fontSize: 12, color: tokens.textMuted }}>
+                      Valor a pagar (ajuste se a fatura veio diferente do calculado)
+                    </Text>
+                    <TextInput
+                      value={paidAmountText}
+                      onChangeText={setPaidAmountText}
+                      keyboardType="decimal-pad"
+                      editable={!hasSubmittedPayment}
+                      style={{
+                        fontFamily: fontFamily.body,
+                        fontSize: 15,
+                        color: tokens.text,
+                        backgroundColor: tokens.surfaceAlt,
+                        borderRadius: 10,
+                        paddingHorizontal: 14,
+                        paddingVertical: 10,
+                      }}
+                    />
                     <View style={{ flexDirection: "row", gap: 8 }}>
                       <Pressable
                         onPress={cancelPaying}
@@ -312,14 +424,14 @@ export function CardRow({
                       </Pressable>
                       <Pressable
                         onPress={() => confirmPaying(cycle)}
-                        disabled={hasSubmittedPayment || !selectedAccountId}
+                        disabled={hasSubmittedPayment || !selectedAccountId || !(parsedPaidAmount > 0)}
                         style={{
                           flex: 1,
                           backgroundColor: tokens.accent,
                           borderRadius: 10,
                           paddingVertical: 10,
                           alignItems: "center",
-                          opacity: hasSubmittedPayment || !selectedAccountId ? 0.6 : 1,
+                          opacity: hasSubmittedPayment || !selectedAccountId || !(parsedPaidAmount > 0) ? 0.6 : 1,
                         }}
                       >
                         {hasSubmittedPayment || isPaying ? (

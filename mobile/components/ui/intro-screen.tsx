@@ -1,8 +1,11 @@
 import React, { useEffect, useRef } from "react";
 import { View, Animated } from "react-native";
-import { fontFamily } from "@/lib/theme/tokens";
+import { fontFamily, darkTheme } from "@/lib/theme/tokens";
 
-const BACKGROUND = "#17161A";
+// Fundo do tema escuro do próprio app (não mais um quase-preto genérico #17161A que não
+// vinha de lugar nenhum da paleta) — a marca clara continua legível em cima dele, e
+// mantém a splash com uma cor de verdade do Prumo em vez de uma cor solta.
+const BACKGROUND = darkTheme.background;
 const MARK_COLOR = "#F5F1EC";
 
 type IntroScreenProps = {
@@ -17,7 +20,9 @@ type IntroScreenProps = {
  *
  * Cores fixas (fundo escuro + marca clara), sem depender do tema claro/escuro escolhido pela
  * pessoa — é um momento único antes dela "entrar" no app propriamente dito, igual a splash
- * nativa (que usa esse mesmo fundo `#17161A`, configurada em app.json).
+ * nativa (mesmo fundo `darkTheme.background`, configurado em app.json no plugin
+ * `expo-splash-screen` — antes essa tela usava um preto solto `#17161A` que não vinha da
+ * paleta e dava um flash perceptível entre a splash nativa e essa animação).
  */
 export function IntroScreen({ onFinish }: IntroScreenProps) {
   const markOpacity = useRef(new Animated.Value(0)).current;
